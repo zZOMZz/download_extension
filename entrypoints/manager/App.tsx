@@ -31,7 +31,7 @@ import {
   setOutputFormat as persistOutputFormat,
   setTaskConcurrency as persistTaskConcurrency,
 } from '~/src/browser/settings';
-import { TsToMp4Writer } from '~/src/browser/transmuxing-writer';
+import { createHlsOutputWriter } from '~/src/browser/hls-output-writer';
 import { commitValidatedDirectoryOutput } from '~/src/browser/validated-output';
 import { buildTaskDiagnosticReport } from '~/src/core/diagnostics/task-report';
 import { resolveDiscoveredMedia } from '~/src/core/discovery/registry';
@@ -46,6 +46,11 @@ import {
   type NetworkRetryEvent,
 } from '~/src/core/hls/download-hls';
 import { inspectHlsUrl, type InspectedHls } from '~/src/core/hls/inspect-hls';
+import {
+  combinedHlsMediaPlaylist,
+  hlsPlaylistUsesFmp4,
+} from '~/src/core/hls/media-bundle';
+import { createHlsOutputPlan, type HlsOutputPlan } from '~/src/core/hls/output-plan';
 import {
   checkpointMatchesDirectory,
   hlsPlaylistFingerprint,
@@ -131,6 +136,7 @@ const DIAGNOSTIC_EVENT_LABEL_KEYS: Record<TaskDiagnosticEventCode, MessageKey> =
   'resolve-started': 'eventResolveStarted',
   'source-resolved': 'eventSourceResolved',
   'manifest-loaded': 'eventManifestLoaded',
+  'audio-rendition-loaded': 'eventAudioRenditionLoaded',
   'output-opened': 'eventOutputOpened',
   'resume-prepared': 'eventResumePrepared',
   'download-started': 'eventDownloadStarted',
@@ -236,20 +242,19 @@ function diagnosticEventMetadata(event: TaskDiagnosticEvent, t: Translator): str
   return details;
 }
 
+interface HlsOutputDetails extends HlsOutputPlan {
+  filename: string;
+}
+
 function outputDetails(
   task: DownloadTask,
   hls: InspectedHls,
-): { filename: string; extension: string; mimeType: string; remuxTs: boolean; resumableTs: boolean } {
-  const fragmentedMp4 = hls.media.segments.some((segment) => Boolean(segment.map));
-  const remuxTs = task.outputFormat === 'mp4' && !fragmentedMp4;
-  const extension = fragmentedMp4 || remuxTs ? 'mp4' : 'ts';
+): HlsOutputDetails {
+  const plan = createHlsOutputPlan(hls, task.outputFormat);
   const title = [task.source.seriesTitle, task.source.title].filter(Boolean).join(' - ');
   return {
-    filename: `${safeFilename(title || task.source.title)}.${extension}`,
-    extension,
-    mimeType: fragmentedMp4 || remuxTs ? 'video/mp4' : 'video/mp2t',
-    remuxTs,
-    resumableTs: !fragmentedMp4,
+    ...plan,
+    filename: `${safeFilename(title || task.source.title)}.${plan.extension}`,
   };
 }
 
@@ -299,7 +304,7 @@ async function waitUntil(timestamp: number, signal: AbortSignal): Promise<void> 
 async function finalizePartialOutput(
   directory: WritableDirectoryHandle,
   checkpoint: DownloadCheckpoint,
-  remuxTs: boolean,
+  details: HlsOutputDetails,
   signal: AbortSignal,
   onProgress: (progress: HlsDownloadProgress) => void,
   t: Translator,
@@ -309,7 +314,7 @@ async function finalizePartialOutput(
     throw new Error(t('partialMissingOrShort'));
   }
   const destination = await openDirectoryOutputWriter(directory, checkpoint.finalFilename);
-  const writer = remuxTs ? new TsToMp4Writer(destination) : destination;
+  const writer = createHlsOutputWriter(destination, details);
   let start = 0;
   try {
     for (const [index, end] of checkpoint.segmentEndOffsets.entries()) {
@@ -614,21 +619,33 @@ export function App() {
       });
       if (media.kind !== 'hls') throw new Error(t('hlsBatchOnly'));
       const hls = await inspectHlsUrl(media.url, loadText, signal);
+      const downloadPlaylist = combinedHlsMediaPlaylist(hls);
       await recordTaskEvent(task.id, 'manifest-loaded', 'info', {
         ...diagnosticResource(hls.selectedVariant?.uri ?? media.url),
-        totalSegments: hls.media.segments.length,
+        totalSegments: downloadPlaylist.segments.length,
       });
-      const problems = validateHlsDownload(hls.media);
-      const externalAudio = Boolean(
-        hls.selectedVariant?.audioGroup &&
-        hls.master?.renditions.some(
-          (rendition) =>
-            rendition.type === 'AUDIO' &&
-            rendition.groupId === hls.selectedVariant?.audioGroup &&
-            rendition.uri,
-        ),
-      );
-      if (externalAudio) problems.push(t('selectedQualitySeparateAudio'));
+      if (hls.audioMedia) {
+        await recordTaskEvent(task.id, 'audio-rendition-loaded', 'info', {
+          ...(hls.selectedAudioRendition?.uri
+            ? diagnosticResource(hls.selectedAudioRendition.uri)
+            : {}),
+          totalSegments: hls.audioMedia.segments.length,
+          ...(hls.selectedAudioRendition?.name
+            ? { message: hls.selectedAudioRendition.name }
+            : {}),
+        });
+      }
+      const problems = [
+        ...validateHlsDownload(hls.media),
+        ...(hls.audioMedia ? validateHlsDownload(hls.audioMedia) : []),
+      ];
+      if (hls.audioMedia && task.outputFormat !== 'mp4') {
+        problems.push(t('separateAudioRequiresMp4'));
+      }
+      if (
+        hls.audioMedia &&
+        hlsPlaylistUsesFmp4(hls.media) !== hlsPlaylistUsesFmp4(hls.audioMedia)
+      ) problems.push(t('mixedSeparateTrackContainers'));
       if (problems.length) throw new Error(problems.join(' '));
       if (!directory) throw new Error(t('chooseDirectoryBeforeQueue'));
 
@@ -639,7 +656,7 @@ export function App() {
         if (!details.resumableTs) {
           throw new Error(t('refreshedStreamIncompatible'));
         }
-        const fingerprint = hlsPlaylistFingerprint(hls.media);
+        const fingerprint = hlsPlaylistFingerprint(downloadPlaylist);
         const expectedPartialFilename = partialFilename(details.filename);
         let checkpoint = task.checkpoint;
         if (checkpoint && !checkpointMatchesDirectory(checkpoint, {
@@ -652,7 +669,7 @@ export function App() {
           checkpoint.playlistFingerprint !== fingerprint ||
           checkpoint.partialFilename !== expectedPartialFilename ||
           checkpoint.finalFilename !== details.filename ||
-          checkpoint.totalSegments !== hls.media.segments.length
+          checkpoint.totalSegments !== downloadPlaylist.segments.length
         )) {
           throw new Error(t('refreshedPlaylistMismatch'));
         }
@@ -672,7 +689,7 @@ export function App() {
           partialFilename: expectedPartialFilename,
           finalFilename: details.filename,
           completedSegments: reconciled.completedSegments,
-          totalSegments: hls.media.segments.length,
+          totalSegments: downloadPlaylist.segments.length,
           bytesWritten: reconciled.bytesWritten,
           segmentEndOffsets: reconciled.segmentEndOffsets,
           updatedAt: Date.now(),
@@ -699,7 +716,7 @@ export function App() {
           completedSegments: checkpoint.completedSegments,
           totalSegments: checkpoint.totalSegments,
         });
-        await downloadHlsPlaylist(hls.media, writer, {
+        await downloadHlsPlaylist(downloadPlaylist, writer, {
           signal,
           networkPolicy,
           loadText,
@@ -735,30 +752,30 @@ export function App() {
             }
           },
         });
-        if (checkpoint.completedSegments !== hls.media.segments.length) {
+        if (checkpoint.completedSegments !== downloadPlaylist.segments.length) {
           throw new Error(t('partialClosedEarly'));
         }
         await recordTaskEvent(task.id, 'finalize-started', 'info', {
           filename: checkpoint.finalFilename,
           bytesWritten: checkpoint.bytesWritten,
         });
-        await finalizePartialOutput(directory, checkpoint, details.remuxTs, signal, (progress) => {
+        await finalizePartialOutput(directory, checkpoint, details, signal, (progress) => {
           latestProgress = progress;
           showProgress(task.id, progress);
         }, t);
         partialOutputToRemove = checkpoint.partialFilename;
       } else {
         const destination = await openDirectoryOutputWriter(directory, details.filename);
-        const writer = details.remuxTs ? new TsToMp4Writer(destination) : destination;
+        const writer = createHlsOutputWriter(destination, details);
         task = await persistTask(resetTaskState(task, 'downloading'));
         await recordTaskEvent(task.id, 'output-opened', 'info', {
           directoryName: directory.name,
           filename: details.filename,
         });
         await recordTaskEvent(task.id, 'download-started', 'info', {
-          totalSegments: hls.media.segments.length,
+          totalSegments: downloadPlaylist.segments.length,
         });
-        await downloadHlsPlaylist(hls.media, writer, {
+        await downloadHlsPlaylist(downloadPlaylist, writer, {
           signal,
           networkPolicy,
           loadText,

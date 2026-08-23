@@ -28,14 +28,17 @@ function fnv1a(value: string): string {
 }
 
 export function hlsPlaylistFingerprint(playlist: HlsMediaPlaylist): string {
-  const identity = playlist.segments.map((segment) => [
-    segment.sequence,
-    Math.round(segment.duration * 1_000),
-    stableResourcePath(segment.uri),
-    segment.byteRange?.offset ?? '',
-    segment.byteRange?.length ?? '',
-    segment.map ? stableResourcePath(segment.map.uri) : '',
-  ].join(':')).join('|');
+  const identity = playlist.segments.map((segment) => {
+    const legacyIdentity = [
+      segment.sequence,
+      Math.round(segment.duration * 1_000),
+      stableResourcePath(segment.uri),
+      segment.byteRange?.offset ?? '',
+      segment.byteRange?.length ?? '',
+      segment.map ? stableResourcePath(segment.map.uri) : '',
+    ].join(':');
+    return segment.streamRole ? `${legacyIdentity}:${segment.streamRole}` : legacyIdentity;
+  }).join('|');
   return `hls-v1:${playlist.mediaSequence}:${playlist.segments.length}:${fnv1a(identity)}`;
 }
 

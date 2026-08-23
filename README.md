@@ -26,6 +26,7 @@ pnpm build
 - Download progressive HTTP(S) media using the browser download manager.
 - Parse HLS master and media playlists.
 - Download HLS VOD playlists, including standard `AES-128` identity encryption.
+- Resolve external HLS audio renditions and merge separate audio/video playlists into one MP4.
 - Choose a persistent HLS output format; MP4 is the default.
 - Download MPEG-TS HLS into a resumable `.part.ts`, then losslessly remux H.264/AAC streams to a finalized, indexed MP4.
 - Discover all episodes from supported series pages and add them to a persistent batch queue.
@@ -77,5 +78,10 @@ still granted; otherwise reconnect it with one click and use Resume. MP4 output 
 needs space for both the `.part.ts` and final `.mp4`; the partial file is removed
 only after the final file passes integrity validation. HLS streams that already use fragmented MP4
 initialization segments still use the direct, non-resumable path.
+
+External HLS audio is resolved from the selected variant's `AUDIO` rendition
+group. MPEG-TS or packed-AAC tracks share the resumable raw-partial path;
+fragmented MP4 tracks are flattened directly into one indexed MP4. Mixed
+MPEG-TS and fragmented-MP4 track pairs are rejected explicitly.
 
 Only download content you own or have permission to save.

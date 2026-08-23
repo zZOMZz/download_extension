@@ -26,6 +26,7 @@ describe('HLS resume metadata', () => {
     second.segments[0]!.uri = second.segments[0]!.uri.replace('sign=old', 'sign=fresh');
     second.segments[1]!.uri = second.segments[1]!.uri.replace('sign=old', 'sign=fresh');
     expect(hlsPlaylistFingerprint(first)).toBe(hlsPlaylistFingerprint(second));
+    expect(hlsPlaylistFingerprint(first)).toBe('hls-v1:20:2:97b20c30');
   });
 
   it('rolls back to the last segment boundary present in the committed file', () => {

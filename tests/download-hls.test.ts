@@ -83,6 +83,34 @@ two.m4s
     expect(progress.filter((value, index) => value > 0 && value !== progress[index - 1])).toEqual([1, 2]);
   });
 
+  it('replays a shared initialization map when switching from video to external audio', async () => {
+    const playlist = mediaPlaylist(`#EXTM3U
+#EXT-X-MAP:URI="shared-init.mp4"
+#EXTINF:4,
+video.m4s
+#EXTINF:4,
+audio.m4s
+#EXT-X-ENDLIST`);
+    playlist.segments[0]!.streamRole = 'video';
+    playlist.segments[1]!.streamRole = 'audio';
+    const resources = new Map([
+      ['https://cdn.example/vod/shared-init.mp4', new Uint8Array([9])],
+      ['https://cdn.example/vod/video.m4s', new Uint8Array([1])],
+      ['https://cdn.example/vod/audio.m4s', new Uint8Array([2])],
+    ]);
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const bytes = resources.get(String(input));
+      return bytes ? response(bytes) : new Response(null, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const writer = new TestWriter();
+    await downloadHlsPlaylist(playlist, writer);
+
+    expect(writer.result()).toEqual(new Uint8Array([9, 1, 9, 2]));
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('shared-init.mp4'))).toHaveLength(2);
+  });
+
   it('reports streamed network bytes, speed, and completion telemetry', async () => {
     const playlist = mediaPlaylist(`#EXTM3U
 #EXTINF:4,

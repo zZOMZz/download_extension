@@ -593,8 +593,8 @@ export async function downloadHlsPlaylist(
     return decryptAes128(bytes, await keyBytes(key), iv);
   };
 
-  const writeMap = async (map: HlsMap, sequence: number): Promise<void> => {
-    const identity = `${map.uri}|${map.byteRange?.offset ?? ''}|${map.byteRange?.length ?? ''}|${map.key?.uri ?? ''}|${map.key?.iv ?? ''}`;
+  const writeMap = async (map: HlsMap, sequence: number, streamRole = ''): Promise<void> => {
+    const identity = `${streamRole}|${map.uri}|${map.byteRange?.offset ?? ''}|${map.byteRange?.length ?? ''}|${map.key?.uri ?? ''}|${map.key?.iv ?? ''}`;
     if (identity === currentMapIdentity) return;
     let bytes = await fetchBytes(map.uri, map.byteRange, options.signal, policy, {
       onRetry: (retry) => options.onRequestRetry?.({
@@ -621,7 +621,7 @@ export async function downloadHlsPlaylist(
       progress.phase = 'requesting';
       clearRetryProgress();
       publishProgress(true);
-      if (segment.map) await writeMap(segment.map, segment.sequence);
+      if (segment.map) await writeMap(segment.map, segment.sequence, segment.streamRole);
 
       let bytes = await fetchBytes(segment.uri, segment.byteRange, options.signal, policy, {
         onChunk: ({ chunkBytes, attemptBytesReceived, contentLength }) => {

@@ -24,6 +24,7 @@ export interface HlsSegment {
   discontinuity: boolean;
   key?: HlsKey;
   map?: HlsMap;
+  streamRole?: 'video' | 'audio';
 }
 
 export interface HlsVariant {
@@ -43,6 +44,9 @@ export interface HlsRendition {
   uri?: string;
   language?: string;
   isDefault: boolean;
+  autoSelect: boolean;
+  forced: boolean;
+  channels?: string;
 }
 
 export interface HlsMasterPlaylist {
@@ -161,9 +165,12 @@ function parseMaster(lines: string[], baseUrl: string): HlsMasterPlaylist {
       renditions.push({
         type: attributes.TYPE ?? 'UNKNOWN',
         isDefault: attributes.DEFAULT === 'YES',
+        autoSelect: attributes.AUTOSELECT === 'YES',
+        forced: attributes.FORCED === 'YES',
         ...(attributes['GROUP-ID'] ? { groupId: attributes['GROUP-ID'] } : {}),
         ...(attributes.NAME ? { name: attributes.NAME } : {}),
         ...(attributes.LANGUAGE ? { language: attributes.LANGUAGE } : {}),
+        ...(attributes.CHANNELS ? { channels: attributes.CHANNELS } : {}),
         ...(attributes.URI ? { uri: resolveUri(attributes.URI, baseUrl) } : {}),
       });
       continue;

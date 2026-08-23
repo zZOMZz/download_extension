@@ -20,7 +20,7 @@ interface TrackChunk {
 }
 
 interface TrackState {
-  id: number;
+  sourceId: string;
   type: string;
   timescale: number;
   sourceTrack: Uint8Array;
@@ -176,6 +176,17 @@ function trackIdFromHeader(bytes: Uint8Array, trackHeader: ParsedBox): number {
   const version = view.getUint8(trackHeader.contentStart);
   if (version !== 0 && version !== 1) throw new Error(`Unsupported MP4 track header version: ${version}.`);
   return view.getUint32(trackHeader.contentStart + (version === 1 ? 20 : 12));
+}
+
+function patchTrackId(sourceTrack: Uint8Array, trackId: number): Uint8Array {
+  const result = sourceTrack.slice();
+  const track = requiredBox(parseBoxes(result), 'trak');
+  const header = requiredBox(childBoxes(result, track), 'tkhd');
+  const view = viewOf(result);
+  const version = view.getUint8(header.contentStart);
+  if (version !== 0 && version !== 1) throw new Error(`Unsupported MP4 track header version: ${version}.`);
+  view.setUint32(header.contentStart + (version === 1 ? 20 : 12), trackId);
+  return result;
 }
 
 function timescaleFromMediaHeader(bytes: Uint8Array, mediaHeader: ParsedBox): number {
@@ -387,10 +398,18 @@ function rebuildContainer(
   }));
 }
 
-function buildEditList(track: TrackState, movieTimescale: number): Uint8Array | undefined {
-  const delay = track.firstDecodeTime ?? 0;
-  if (delay === 0) return undefined;
-  const emptyDuration = Math.ceil(delay * movieTimescale / track.timescale);
+function trackStartSeconds(track: TrackState): number {
+  return (track.firstDecodeTime ?? 0) / track.timescale;
+}
+
+function buildEditList(
+  track: TrackState,
+  movieTimescale: number,
+  timelineOriginSeconds: number,
+): Uint8Array | undefined {
+  const delaySeconds = Math.max(0, trackStartSeconds(track) - timelineOriginSeconds);
+  if (delaySeconds === 0) return undefined;
+  const emptyDuration = Math.ceil(delaySeconds * movieTimescale);
   const mediaDuration = Math.ceil(track.presentationEnd * movieTimescale / track.timescale);
   const payload = concatenate([
     uint32(2),
@@ -400,13 +419,18 @@ function buildEditList(track: TrackState, movieTimescale: number): Uint8Array | 
   return makeBox('edts', fullBox('elst', 0, 0, payload));
 }
 
-function buildTrack(track: TrackState, movieTimescale: number): Uint8Array {
+function buildTrack(
+  track: TrackState,
+  movieTimescale: number,
+  timelineOriginSeconds: number,
+): Uint8Array {
   const source = track.sourceTrack;
   const trackBox = requiredBox(parseBoxes(source), 'trak');
-  const trackDuration = Math.ceil(
-    ((track.firstDecodeTime ?? 0) + track.presentationEnd) * movieTimescale / track.timescale,
-  );
-  const editList = buildEditList(track, movieTimescale);
+  const trackDuration = Math.ceil((
+    Math.max(0, trackStartSeconds(track) - timelineOriginSeconds) +
+    track.presentationEnd / track.timescale
+  ) * movieTimescale);
+  const editList = buildEditList(track, movieTimescale, timelineOriginSeconds);
   return makeBox('trak', ...childBoxes(source, trackBox).flatMap((child) => {
     if (child.type === 'tkhd') return [patchFullBoxDuration(sliceBox(source, child), 'tkhd', trackDuration)];
     if (child.type === 'edts') return [];
@@ -434,9 +458,26 @@ function movieTimescale(bytes: Uint8Array, movieHeader: ParsedBox): number {
   return timescale;
 }
 
+function sourceTrackKey(sourceId: string, trackId: number): string {
+  return `${sourceId}\u0000${trackId}`;
+}
+
+function patchMovieHeader(
+  source: Uint8Array,
+  duration: number,
+  nextTrackId: number,
+): Uint8Array {
+  const result = patchFullBoxDuration(source, 'mvhd', duration);
+  const header = requiredBox(parseBoxes(result), 'mvhd');
+  viewOf(result).setUint32(header.end - 4, nextTrackId);
+  return result;
+}
+
 export class FlatMp4Muxer {
   readonly #destination: RandomAccessBinaryWriter;
-  readonly #tracks = new Map<number, TrackState>();
+  readonly #tracks = new Map<string, TrackState>();
+  readonly #usedTrackIds = new Set<number>();
+  readonly #sourceIds = new Set<string>();
   #sourceInitialization: Uint8Array | null = null;
   #sourceMovie: ParsedBox | null = null;
   #movieTimescale = 0;
@@ -450,7 +491,17 @@ export class FlatMp4Muxer {
   }
 
   async initialize(initializationSegment: Uint8Array): Promise<void> {
-    if (this.#initialized) throw new Error('The MP4 muxer has already been initialized.');
+    await this.addSource('default', initializationSegment);
+  }
+
+  async addSource(
+    sourceId: string,
+    initializationSegment: Uint8Array,
+    acceptedTrackType?: 'vide' | 'soun',
+  ): Promise<void> {
+    if (this.#finalized) throw new Error('The MP4 muxer has already been finalized.');
+    if (!sourceId) throw new Error('An MP4 source ID is required.');
+    if (this.#sourceIds.has(sourceId)) throw new Error(`The MP4 source “${sourceId}” is already initialized.`);
     const topLevel = parseBoxes(initializationSegment);
     const fileType = requiredBox(topLevel, 'ftyp');
     const movie = requiredBox(topLevel, 'moov');
@@ -464,37 +515,48 @@ export class FlatMp4Muxer {
       const mediaChildren = childBoxes(initializationSegment, media);
       const mediaHeader = requiredBox(mediaChildren, 'mdhd');
       const handler = requiredBox(mediaChildren, 'hdlr');
-      const id = trackIdFromHeader(initializationSegment, trackHeader);
-      this.#tracks.set(id, {
-        id,
-        type: handlerType(initializationSegment, handler),
+      const type = handlerType(initializationSegment, handler);
+      if (acceptedTrackType && type !== acceptedTrackType) continue;
+      const sourceTrackId = trackIdFromHeader(initializationSegment, trackHeader);
+      const id = this.#allocateTrackId(sourceTrackId);
+      this.#tracks.set(sourceTrackKey(sourceId, sourceTrackId), {
+        sourceId,
+        type,
         timescale: timescaleFromMediaHeader(initializationSegment, mediaHeader),
-        sourceTrack: sliceBox(initializationSegment, trackBox),
+        sourceTrack: patchTrackId(sliceBox(initializationSegment, trackBox), id),
         samples: [],
         chunks: [],
         decodeDuration: 0,
         presentationEnd: 0,
       });
     }
-    if (this.#tracks.size === 0) throw new Error('The MP4 initialization segment contains no tracks.');
+    if (![...this.#tracks.values()].some((track) => track.sourceId === sourceId)) {
+      throw new Error('The MP4 initialization segment contains no tracks.');
+    }
+    this.#sourceIds.add(sourceId);
 
-    this.#sourceInitialization = initializationSegment.slice();
-    this.#sourceMovie = movie;
-    const fileTypeBytes = sliceBox(initializationSegment, fileType);
-    await this.#destination.write(fileTypeBytes);
-    this.#writePosition = fileTypeBytes.byteLength;
-    this.#mdatStart = this.#writePosition;
-    const mediaHeaderBytes = concatenate([uint32(1), typeBytes('mdat'), uint64(16)]);
-    await this.#destination.write(mediaHeaderBytes);
-    this.#writePosition += mediaHeaderBytes.byteLength;
-    this.#initialized = true;
+    if (!this.#initialized) {
+      this.#sourceInitialization = initializationSegment.slice();
+      this.#sourceMovie = movie;
+      const fileTypeBytes = sliceBox(initializationSegment, fileType);
+      await this.#destination.write(fileTypeBytes);
+      this.#writePosition = fileTypeBytes.byteLength;
+      this.#mdatStart = this.#writePosition;
+      const mediaHeaderBytes = concatenate([uint32(1), typeBytes('mdat'), uint64(16)]);
+      await this.#destination.write(mediaHeaderBytes);
+      this.#writePosition += mediaHeaderBytes.byteLength;
+      this.#initialized = true;
+    }
   }
 
-  async appendFragment(fragment: Uint8Array): Promise<void> {
+  async appendFragment(fragment: Uint8Array, sourceId = 'default'): Promise<void> {
     if (!this.#initialized || this.#finalized) throw new Error('The MP4 muxer is not accepting media fragments.');
     const boxes = parseBoxes(fragment);
     for (let index = 0; index < boxes.length; index += 1) {
       const movieFragment = boxes[index]!;
+      if (movieFragment.type === 'styp' || movieFragment.type === 'sidx' || movieFragment.type === 'emsg' || movieFragment.type === 'prft') {
+        continue;
+      }
       if (movieFragment.type !== 'moof') throw new Error(`Unexpected ${movieFragment.type} box in MP4 media data.`);
       const mediaData = boxes[index + 1];
       if (!mediaData || mediaData.type !== 'mdat') throw new Error('An MP4 movie fragment is missing its media data.');
@@ -503,7 +565,7 @@ export class FlatMp4Muxer {
       for (const trackFragment of fragmentChildren.filter(({ type }) => type === 'traf')) {
         const trackFragmentChildren = childBoxes(fragment, trackFragment);
         const defaults = parseTrackFragmentDefaults(fragment, requiredBox(trackFragmentChildren, 'tfhd'));
-        const track = this.#tracks.get(defaults.trackId);
+        const track = this.#tracks.get(sourceTrackKey(sourceId, defaults.trackId));
         if (!track) throw new Error(`The MP4 fragment references unknown track ${defaults.trackId}.`);
         const baseDecodeTime = decodeTime(fragment, requiredBox(trackFragmentChildren, 'tfdt'));
         if (track.firstDecodeTime === undefined) track.firstDecodeTime = baseDecodeTime;
@@ -550,22 +612,36 @@ export class FlatMp4Muxer {
 
     const source = this.#sourceInitialization;
     const movieChildren = childBoxes(source, this.#sourceMovie);
+    const timelineOriginSeconds = Math.min(...[...this.#tracks.values()].map(trackStartSeconds));
     const durationSeconds = Math.max(...[...this.#tracks.values()].map((track) =>
-      ((track.firstDecodeTime ?? 0) + track.presentationEnd) / track.timescale));
+      Math.max(0, trackStartSeconds(track) - timelineOriginSeconds) + track.presentationEnd / track.timescale));
     const movieDuration = Math.ceil(durationSeconds * this.#movieTimescale);
+    let insertedTracks = false;
     const movie = makeBox('moov', ...movieChildren.flatMap((child) => {
       if (child.type === 'mvex') return [];
       if (child.type === 'mvhd') {
-        return [patchFullBoxDuration(sliceBox(source, child), 'mvhd', movieDuration)];
+        return [patchMovieHeader(
+          sliceBox(source, child),
+          movieDuration,
+          Math.max(...this.#usedTrackIds) + 1,
+        )];
       }
       if (child.type !== 'trak') return [sliceBox(source, child)];
-      const id = trackIdFromHeader(source, requiredBox(childBoxes(source, child), 'tkhd'));
-      const track = this.#tracks.get(id);
-      if (!track) throw new Error(`The MP4 movie references unknown track ${id}.`);
-      return [buildTrack(track, this.#movieTimescale)];
+      if (insertedTracks) return [];
+      insertedTracks = true;
+      return [...this.#tracks.values()].map((track) =>
+        buildTrack(track, this.#movieTimescale, timelineOriginSeconds));
     }));
     await this.#destination.write(movie);
     this.#writePosition += movie.byteLength;
     this.#finalized = true;
+  }
+
+  #allocateTrackId(preferred: number): number {
+    let candidate = preferred > 0 && !this.#usedTrackIds.has(preferred) ? preferred : 1;
+    while (this.#usedTrackIds.has(candidate)) candidate += 1;
+    if (candidate > UINT32_MAX) throw new Error('The MP4 output contains too many tracks.');
+    this.#usedTrackIds.add(candidate);
+    return candidate;
   }
 }

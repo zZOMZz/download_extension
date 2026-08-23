@@ -1,22 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatByteRate, formatBytes, formatDuration, safeFilename } from '~/src/core/format';
 import { parseDashManifest, type DashManifestSummary } from '~/src/core/protocols/dash';
-import {
-  parseHlsPlaylist,
-  type HlsMasterPlaylist,
-  type HlsMediaPlaylist,
-  type HlsVariant,
-} from '~/src/core/protocols/hls';
+import type { HlsRendition, HlsVariant } from '~/src/core/protocols/hls';
 import {
   downloadHlsPlaylist,
   fetchTextResource,
   validateHlsDownload,
   type HlsDownloadProgress,
 } from '~/src/core/hls/download-hls';
+import { inspectHlsUrl, inspectHlsVariant, type InspectedHls } from '~/src/core/hls/inspect-hls';
+import {
+  combinedHlsMediaPlaylist,
+  hlsPlaylistUsesFmp4,
+} from '~/src/core/hls/media-bundle';
+import { createHlsOutputPlan, type HlsOutputPlan } from '~/src/core/hls/output-plan';
 import { listTabCandidates } from '~/src/browser/runtime-client';
 import { openOutputWriter } from '~/src/browser/output-writer';
 import { readSettings, setOutputFormat as persistOutputFormat } from '~/src/browser/settings';
-import { TsToMp4Writer } from '~/src/browser/transmuxing-writer';
+import { createHlsOutputWriter } from '~/src/browser/hls-output-writer';
 import { createTranslator, type MessageKey, type Translator } from '~/src/shared/i18n';
 import type { MediaCandidate } from '~/src/shared/media';
 import {
@@ -26,12 +27,6 @@ import {
   type NetworkSettings,
   type OutputFormat,
 } from '~/src/shared/settings';
-
-interface HlsState {
-  master?: HlsMasterPlaylist;
-  media: HlsMediaPlaylist;
-  selectedVariant?: HlsVariant;
-}
 
 const PHASE_LABEL_KEYS: Record<NonNullable<HlsDownloadProgress['phase']>, MessageKey> = {
   requesting: 'phaseRequesting',
@@ -58,25 +53,27 @@ function variantLabel(variant: HlsVariant, t: Translator): string {
   return parts.filter(Boolean).join(' · ') || t('unknownQuality');
 }
 
-function preferredVariant(master: HlsMasterPlaylist): HlsVariant {
-  return [...master.variants].sort((left, right) => (right.bandwidth ?? 0) - (left.bandwidth ?? 0))[0]!;
+function audioRenditionLabel(rendition: HlsRendition, t: Translator): string {
+  return [rendition.name, rendition.language, rendition.channels].filter(Boolean).join(' · ') || t('audioTrack');
+}
+
+interface HlsOutputDetails extends HlsOutputPlan {
+  filename: string;
+  mime: string;
 }
 
 function outputDetails(
   candidate: MediaCandidate,
-  hls: HlsState,
+  hls: InspectedHls,
   outputFormat: OutputFormat,
-): { filename: string; extension: string; mime: string; remuxTs: boolean } {
-  const fragmentedMp4 = hls.media.segments.some((segment) => Boolean(segment.map));
-  const remuxTs = outputFormat === 'mp4' && !fragmentedMp4;
-  const extension = fragmentedMp4 || remuxTs ? 'mp4' : 'ts';
+): HlsOutputDetails {
+  const plan = createHlsOutputPlan(hls, outputFormat);
   const height = hls.selectedVariant?.resolution?.height;
   const base = safeFilename(candidate.title ?? 'video');
   return {
-    filename: `${base}${height ? `-${height}p` : ''}.${extension}`,
-    extension,
-    mime: fragmentedMp4 ? 'video/mp4' : 'video/mp2t',
-    remuxTs,
+    ...plan,
+    filename: `${base}${height ? `-${height}p` : ''}.${plan.extension}`,
+    mime: plan.mimeType,
   };
 }
 
@@ -85,7 +82,7 @@ export function App() {
   const tabId = Number(params.get('tabId'));
   const candidateId = params.get('candidateId');
   const [candidate, setCandidate] = useState<MediaCandidate | null>(null);
-  const [hls, setHls] = useState<HlsState | null>(null);
+  const [hls, setHls] = useState<InspectedHls | null>(null);
   const [dash, setDash] = useState<DashManifestSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
@@ -103,22 +100,6 @@ export function App() {
     idleTimeoutMs: networkSettings.idleTimeoutSeconds * 1_000,
   };
   const loadText = (url: string, signal?: AbortSignal) => fetchTextResource(url, signal, networkPolicy);
-
-  const inspectHls = async (
-    target: MediaCandidate,
-    url: string,
-    master?: HlsMasterPlaylist,
-    selectedVariant?: HlsVariant,
-    signal?: AbortSignal,
-  ) => {
-    const parsed = parseHlsPlaylist(await loadText(url, signal), url);
-    if (parsed.type === 'master') {
-      const variant = preferredVariant(parsed);
-      await inspectHls(target, variant.uri, parsed, variant, signal);
-      return;
-    }
-    setHls({ media: parsed, ...(master ? { master } : {}), ...(selectedVariant ? { selectedVariant } : {}) });
-  };
 
   useEffect(() => {
     void readSettings().then((settings) => {
@@ -142,7 +123,7 @@ export function App() {
         const found = (await listTabCandidates(tabId)).find((item) => item.id === candidateId);
         if (!found) throw new Error(t('candidateExpired'));
         setCandidate(found);
-        if (found.kind === 'hls') await inspectHls(found, found.url, undefined, undefined, controller.signal);
+        if (found.kind === 'hls') setHls(await inspectHlsUrl(found.url, loadText, controller.signal));
         else if (found.kind === 'dash') setDash(parseDashManifest(await loadText(found.url, controller.signal)));
         else throw new Error(t('unsupportedStreamDownloader'));
       } catch (cause) {
@@ -155,15 +136,30 @@ export function App() {
   }, [candidateId, tabId]);
 
   const changeVariant = async (uri: string) => {
-    if (!candidate || !hls?.master) return;
+    if (!hls?.master) return;
     const variant = hls.master.variants.find((item) => item.uri === uri);
     if (!variant) return;
     setLoading(true);
     setError(null);
     try {
-      await inspectHls(candidate, variant.uri, hls.master, variant);
+      setHls(await inspectHlsVariant(hls.master, variant, loadText));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('unableLoadQuality'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const changeAudioRendition = async (uri: string) => {
+    if (!hls?.master || !hls.selectedVariant) return;
+    const rendition = hls.master.renditions.find((item) => item.uri === uri);
+    if (!rendition) return;
+    setLoading(true);
+    setError(null);
+    try {
+      setHls(await inspectHlsVariant(hls.master, hls.selectedVariant, loadText, undefined, rendition));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('unableLoadAudioTrack'));
     } finally {
       setLoading(false);
     }
@@ -173,26 +169,25 @@ export function App() {
     if (!candidate || !hls) return;
     setError(null);
     const details = outputDetails(candidate, hls, outputFormat);
+    const downloadPlaylist = combinedHlsMediaPlaylist(hls);
     try {
       const destination = await openOutputWriter(
         details.filename,
         details.remuxTs ? 'video/mp4' : details.mime,
         details.extension,
       );
-      const writer = details.remuxTs
-        ? new TsToMp4Writer(destination)
-        : destination;
+      const writer = createHlsOutputWriter(destination, details);
       const controller = new AbortController();
       abortController.current = controller;
       setDownloading(true);
       setProgress({
         completedSegments: 0,
-        totalSegments: hls.media.segments.length,
+        totalSegments: downloadPlaylist.segments.length,
         bytesWritten: 0,
         phase: 'requesting',
         networkBytesReceived: 0,
       });
-      await downloadHlsPlaylist(hls.media, writer, {
+      await downloadHlsPlaylist(downloadPlaylist, writer, {
         signal: controller.signal,
         networkPolicy,
         loadText,
@@ -217,14 +212,16 @@ export function App() {
     }
   };
 
-  const problems = hls ? validateHlsDownload(hls.media) : [];
-  const externalAudio = Boolean(
-    hls?.selectedVariant?.audioGroup &&
-    hls.master?.renditions.some(
-      (rendition) => rendition.type === 'AUDIO' && rendition.groupId === hls.selectedVariant?.audioGroup && rendition.uri,
-    ),
-  );
-  if (externalAudio) problems.push(t('separateAudioProblem'));
+  const problems = hls ? [
+    ...validateHlsDownload(hls.media),
+    ...(hls.audioMedia ? validateHlsDownload(hls.audioMedia) : []),
+  ] : [];
+  const externalAudio = Boolean(hls?.audioMedia);
+  if (hls?.audioMedia && outputFormat !== 'mp4') problems.push(t('separateAudioRequiresMp4'));
+  if (
+    hls?.audioMedia &&
+    hlsPlaylistUsesFmp4(hls.media) !== hlsPlaylistUsesFmp4(hls.audioMedia)
+  ) problems.push(t('mixedSeparateTrackContainers'));
 
   return (
     <main>
@@ -241,7 +238,7 @@ export function App() {
           <>
             <div className="facts">
               <div><span>{t('protocol')}</span><strong>HLS</strong></div>
-              <div><span>{t('segments')}</span><strong>{hls.media.segments.length}</strong></div>
+              <div><span>{t('segments')}</span><strong>{combinedHlsMediaPlaylist(hls).segments.length}</strong></div>
               <div><span>{t('duration')}</span><strong>{Math.round(hls.media.segments.reduce((sum, segment) => sum + segment.duration, 0))}s</strong></div>
               <div><span>{t('playlist')}</span><strong>{hls.media.endList ? 'VOD' : t('live')}</strong></div>
             </div>
@@ -261,6 +258,28 @@ export function App() {
               </label>
             )}
 
+            {hls.master && hls.selectedAudioRendition && (
+              <label>
+                {t('audioTrack')}
+                <select
+                  value={hls.selectedAudioRendition?.uri}
+                  disabled={downloading}
+                  onChange={(event) => void changeAudioRendition(event.target.value)}
+                >
+                  {hls.master.renditions
+                    .filter((rendition) =>
+                      rendition.type === 'AUDIO' &&
+                      rendition.groupId === hls.selectedVariant?.audioGroup &&
+                      rendition.uri)
+                    .map((rendition) => (
+                      <option value={rendition.uri} key={rendition.uri}>
+                        {audioRenditionLabel(rendition, t)}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
+
             <label>
               {t('outputFormat')}
               <select
@@ -276,6 +295,14 @@ export function App() {
             {outputFormat === 'mp4' && !hls.media.segments.some((segment) => Boolean(segment.map)) && (
               <div className="notice info">
                 {t('tsRemuxNotice')}
+              </div>
+            )}
+
+            {externalAudio && (
+              <div className="notice info">
+                {t('separateAudioMuxNotice', {
+                  track: hls.selectedAudioRendition ? audioRenditionLabel(hls.selectedAudioRendition, t) : t('audioTrack'),
+                })}
               </div>
             )}
 
