@@ -32,6 +32,7 @@ import {
   setTaskConcurrency as persistTaskConcurrency,
 } from '~/src/browser/settings';
 import { TsToMp4Writer } from '~/src/browser/transmuxing-writer';
+import { commitValidatedDirectoryOutput } from '~/src/browser/validated-output';
 import { buildTaskDiagnosticReport } from '~/src/core/diagnostics/task-report';
 import { resolveDiscoveredMedia } from '~/src/core/discovery/registry';
 import { formatByteRate, formatBytes, formatDuration, safeFilename } from '~/src/core/format';
@@ -55,6 +56,7 @@ import {
   type HostHealthSnapshot,
   type NetworkRequestCoordinator,
 } from '~/src/core/network/host-health';
+import { OutputValidationError } from '~/src/core/media/output-validator';
 import { runTaskPool } from '~/src/core/task-pool';
 import { classifyTaskError } from '~/src/core/task-error';
 import { createTranslator, LANGUAGE_OPTIONS, type MessageKey, type Translator } from '~/src/shared/i18n';
@@ -136,6 +138,7 @@ const DIAGNOSTIC_EVENT_LABEL_KEYS: Record<TaskDiagnosticEventCode, MessageKey> =
   'checkpoint-saved': 'eventCheckpointSaved',
   'recovery-scheduled': 'eventRecoveryScheduled',
   'finalize-started': 'eventFinalizeStarted',
+  'output-validated': 'eventOutputValidated',
   'task-completed': 'eventTaskCompleted',
   'task-failed': 'eventTaskFailed',
   'task-cancelled': 'eventTaskCancelled',
@@ -218,6 +221,17 @@ function diagnosticEventMetadata(event: TaskDiagnosticEvent, t: Translator): str
   }
   const bytes = formatBytes(event.bytesWritten);
   if (bytes) details.push(t('diagnosticBytes', { bytes }));
+  if (event.videoTracks !== undefined || event.audioTracks !== undefined) {
+    details.push(t('diagnosticTracks', {
+      video: event.videoTracks ?? 0,
+      audio: event.audioTracks ?? 0,
+    }));
+  }
+  if (event.durationSeconds !== undefined) {
+    details.push(t('diagnosticMediaDuration', {
+      duration: formatDuration(event.durationSeconds) ?? '0s',
+    }));
+  }
   if (event.filename) details.push(event.filename);
   return details;
 }
@@ -619,6 +633,7 @@ export function App() {
       if (!directory) throw new Error(t('chooseDirectoryBeforeQueue'));
 
       const details = outputDetails(task, hls);
+      let partialOutputToRemove: string | null = null;
       const resumeEnabled = Boolean(task.checkpoint) || (networkSettings.resumePartialDownloads && details.resumableTs);
       if (resumeEnabled) {
         if (!details.resumableTs) {
@@ -731,7 +746,7 @@ export function App() {
           latestProgress = progress;
           showProgress(task.id, progress);
         }, t);
-        await removeDirectoryFile(directory, checkpoint.partialFilename);
+        partialOutputToRemove = checkpoint.partialFilename;
       } else {
         const destination = await openDirectoryOutputWriter(directory, details.filename);
         const writer = details.remuxTs ? new TsToMp4Writer(destination) : destination;
@@ -760,6 +775,22 @@ export function App() {
         });
       }
 
+      const validation = await commitValidatedDirectoryOutput(directory, details.filename, {
+        format: details.extension === 'mp4' ? 'mp4' : 'ts',
+        ...(details.extension === 'ts' && latestProgress?.bytesWritten !== undefined
+          ? { expectedBytes: latestProgress.bytesWritten }
+          : {}),
+        requireVideo: true,
+      }, partialOutputToRemove ?? undefined);
+      await recordTaskEvent(task.id, 'output-validated', 'info', {
+        filename: details.filename,
+        bytesWritten: validation.size,
+        ...(validation.videoTracks === undefined ? {} : { videoTracks: validation.videoTracks }),
+        ...(validation.audioTracks === undefined ? {} : { audioTracks: validation.audioTracks }),
+        ...(validation.durationSeconds === undefined
+          ? {}
+          : { durationSeconds: validation.durationSeconds }),
+      });
       const completed = resetTaskState(task, 'completed');
       delete completed.checkpoint;
       delete completed.recoveryAttempt;
@@ -768,13 +799,14 @@ export function App() {
       await recordTaskEvent(task.id, 'task-completed', 'info', {
         completedSegments: latestProgress?.completedSegments,
         totalSegments: latestProgress?.totalSegments,
-        bytesWritten: latestProgress?.bytesWritten,
+        bytesWritten: validation.size,
       });
       return 'completed' as const;
     } catch (cause) {
       const cancelled = signal.aborted || (cause instanceof DOMException && cause.name === 'AbortError');
       const message = cancelled
         ? t('taskCancelled')
+        : cause instanceof OutputValidationError ? t('outputValidationFailed')
         : cause instanceof Error ? cause.message : t('downloadFailed');
       const classified = classifyTaskError(cancelled
         ? new DOMException(message, 'AbortError')

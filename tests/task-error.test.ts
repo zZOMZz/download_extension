@@ -5,6 +5,7 @@ import {
   NetworkTimeoutError,
 } from '../src/core/hls/download-hls';
 import { classifyTaskError } from '../src/core/task-error';
+import { OutputValidationError } from '../src/core/media/output-validator';
 
 describe('task error classification', () => {
   it('extracts an HTTP status and strips signed query parameters', () => {
@@ -46,5 +47,16 @@ describe('task error classification', () => {
     )).category).toBe('timeout');
     expect(classifyTaskError(new Error('The partial file is shorter than its checkpoint.')).category).toBe('filesystem');
     expect(classifyTaskError(new DOMException('cancelled', 'AbortError')).category).toBe('cancelled');
+  });
+
+  it('preserves structured output validation error codes', () => {
+    expect(classifyTaskError(new OutputValidationError(
+      'missing-video-track',
+      'The MP4 output does not contain a video track.',
+    ))).toMatchObject({
+      category: 'output',
+      code: 'missing-video-track',
+      recoverable: false,
+    });
   });
 });

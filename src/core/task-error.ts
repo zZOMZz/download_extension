@@ -3,6 +3,7 @@ import {
   NetworkResourceError,
   NetworkTimeoutError,
 } from './hls/download-hls';
+import { OutputValidationError } from './media/output-validator';
 import {
   diagnosticResource,
   sanitizeDiagnosticText,
@@ -44,6 +45,13 @@ export function classifyTaskError(error: unknown): DownloadFailure {
 
   if (chain.some(({ name }) => name === 'AbortError')) {
     return baseFailure(error, 'cancelled', 'cancelled', false);
+  }
+
+  const outputValidation = chain.find(
+    (item): item is OutputValidationError => item instanceof OutputValidationError,
+  );
+  if (outputValidation) {
+    return baseFailure(error, 'output', outputValidation.code, false);
   }
 
   if (networkResource) {

@@ -38,6 +38,7 @@ pnpm build
 - Remember the selected output directory in IndexedDB, restore it when permission remains granted, and offer one-click reconnection otherwise.
 - Adapt request concurrency per host after repeated 429, 5xx, timeout, or transport failures, including a short circuit-breaker cooldown.
 - Keep bounded per-task diagnostics with structured failure categories and exportable, query-string-redacted JSON reports.
+- Validate committed MP4/TS output structure before marking a task complete, including MP4 media tracks and duration.
 - Refuse DRM-like HLS encryption methods and unsupported live playlists.
 
 ## HLS site adapters
@@ -74,7 +75,7 @@ only compact checkpoint metadata is stored with the task. After reopening the
 manager, the remembered directory is restored automatically when permission is
 still granted; otherwise reconnect it with one click and use Resume. MP4 output temporarily
 needs space for both the `.part.ts` and final `.mp4`; the partial file is removed
-only after finalization succeeds. HLS streams that already use fragmented MP4
+only after the final file passes integrity validation. HLS streams that already use fragmented MP4
 initialization segments still use the direct, non-resumable path.
 
 Only download content you own or have permission to save.
