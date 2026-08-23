@@ -10,6 +10,43 @@ export type MediaKind = z.infer<typeof mediaKindSchema>;
 export const candidateSourceSchema = z.enum(['network', 'dom', 'performance']);
 export type CandidateSource = z.infer<typeof candidateSourceSchema>;
 
+export const dashByteRangeSchema = z.object({
+  offset: z.number().int().nonnegative(),
+  length: z.number().int().positive(),
+});
+
+export const dashResourceSchema = z.object({
+  url: z.string().url(),
+  alternativeUrls: z.string().url().array().optional(),
+  byteRange: dashByteRangeSchema.optional(),
+});
+
+export const dashTrackSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(['video', 'audio']),
+  bandwidth: z.number().int().nonnegative().optional(),
+  mimeType: z.string().optional(),
+  codecs: z.string().optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  frameRate: z.number().positive().optional(),
+  initialization: dashResourceSchema,
+  index: dashResourceSchema.optional(),
+  segments: dashResourceSchema.array().optional(),
+});
+
+export const dashMediaSourceSchema = z.object({
+  type: z.enum(['static', 'dynamic']),
+  durationSeconds: z.number().nonnegative().optional(),
+  hasContentProtection: z.boolean(),
+  tracks: dashTrackSchema.array(),
+});
+
+export type DashByteRange = z.infer<typeof dashByteRangeSchema>;
+export type DashResource = z.infer<typeof dashResourceSchema>;
+export type DashTrack = z.infer<typeof dashTrackSchema>;
+export type DashMediaSource = z.infer<typeof dashMediaSourceSchema>;
+
 export const mediaCandidateSchema = z.object({
   id: z.string().min(1),
   tabId: z.number().int(),
@@ -21,6 +58,8 @@ export const mediaCandidateSchema = z.object({
   mimeType: z.string().optional(),
   contentLength: z.number().int().nonnegative().optional(),
   detectedAt: z.number().int().nonnegative(),
+  siteAdapterId: z.string().min(1).optional(),
+  dash: dashMediaSourceSchema.optional(),
 });
 
 export type MediaCandidate = z.infer<typeof mediaCandidateSchema>;
@@ -56,6 +95,11 @@ export const runtimeRequestSchema = z.discriminatedUnion('type', [
     type: z.literal('downloader:open'),
     candidateId: z.string().min(1),
     tabId: z.number().int().nonnegative(),
+  }),
+  z.object({
+    type: z.literal('request-adapter:configure'),
+    candidateId: z.string().min(1),
+    sourceTabId: z.number().int().nonnegative(),
   }),
   z.object({
     type: z.literal('manager:open'),

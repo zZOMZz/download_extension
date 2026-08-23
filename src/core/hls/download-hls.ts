@@ -82,7 +82,7 @@ interface ResolvedNetworkPolicy {
   requestCoordinator?: NetworkRequestCoordinator;
 }
 
-interface FetchChunkEvent {
+export interface FetchChunkEvent {
   chunkBytes: number;
   attemptBytesReceived: number;
   contentLength?: number;
@@ -101,7 +101,7 @@ export interface HlsRequestRetryEvent extends NetworkRetryEvent {
   segment?: number;
 }
 
-interface FetchBytesCallbacks {
+export interface FetchBytesCallbacks {
   onChunk?: (event: FetchChunkEvent) => void;
   onRetry?: (event: NetworkRetryEvent) => void;
 }
@@ -286,6 +286,7 @@ async function fetchBytes(
   policy: ResolvedNetworkPolicy,
   callbacks: FetchBytesCallbacks = {},
   resourceKind: Exclude<NetworkResourceKind, 'text'> = 'media-segment',
+  requireExactRange = false,
 ): Promise<Uint8Array> {
   let lastError: unknown;
   let attemptsUsed = 0;
@@ -309,6 +310,15 @@ async function fetchBytes(
         );
         if (!response.ok) {
           throw new HttpStatusError(response.status, parseRetryAfter(response.headers.get('Retry-After')));
+        }
+        if (range && requireExactRange) {
+          const contentRange = response.headers.get('Content-Range');
+          const expectedEnd = range.offset + range.length - 1;
+          const match = contentRange ? /^bytes (\d+)-(\d+)\/(?:\d+|\*)$/i.exec(contentRange) : null;
+          if (response.status !== 206 || !match || Number(match[1]) !== range.offset || Number(match[2]) !== expectedEnd) {
+            await response.body?.cancel();
+            throw new Error(`The server did not honor the requested byte range ${range.offset}-${expectedEnd}.`);
+          }
         }
         let bytes = await readResponseBytes(response, policy, controller, callbacks.onChunk);
         if (range && response.status === 200) {
@@ -345,6 +355,18 @@ async function fetchBytes(
     isTaskRecoverable(lastError),
     lastError,
   );
+}
+
+export async function fetchBinaryResource(
+  url: string,
+  range?: HlsByteRange,
+  signal?: AbortSignal,
+  policyOptions?: HlsNetworkPolicy,
+  callbacks: FetchBytesCallbacks = {},
+  resourceKind: Exclude<NetworkResourceKind, 'text'> = 'media-segment',
+  requireExactRange = false,
+): Promise<Uint8Array> {
+  return fetchBytes(url, range, signal, networkPolicy(policyOptions), callbacks, resourceKind, requireExactRange);
 }
 
 export async function fetchTextResource(
@@ -421,7 +443,7 @@ class NetworkSpeedTracker {
   }
 }
 
-function estimateRemainingSeconds(progress: HlsDownloadProgress): number | undefined {
+export function estimateRemainingSeconds(progress: HlsDownloadProgress): number | undefined {
   const speed = progress.currentSpeedBytesPerSecond || progress.averageSpeedBytesPerSecond;
   if (!speed) return undefined;
 

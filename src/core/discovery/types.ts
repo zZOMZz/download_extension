@@ -1,10 +1,12 @@
 import type { DiscoveredMediaItem } from '~/src/shared/discovery';
 import type { MediaKind } from '~/src/shared/media';
+import type { DashMediaSource } from '~/src/shared/media';
 
 export interface ResolvedDiscoveredMedia {
   kind: Exclude<MediaKind, 'blob'>;
   url: string;
   title: string;
+  dash?: DashMediaSource;
 }
 
 export interface DiscoveryResolveContext {

@@ -40,6 +40,17 @@ export async function listTabCandidates(tabId: number): Promise<MediaCandidate[]
   return candidateListResponseSchema.parse(response).candidates;
 }
 
+export async function configureCandidateRequestAdapter(
+  sourceTabId: number,
+  candidateId: string,
+): Promise<void> {
+  await runRuntimeAction({
+    type: 'request-adapter:configure',
+    sourceTabId,
+    candidateId,
+  });
+}
+
 export async function runRuntimeAction(request: RuntimeRequest): Promise<void> {
   const response: unknown = await browser.runtime.sendMessage(request);
   const parsed = actionResponseSchema.parse(response);

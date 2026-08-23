@@ -1,19 +1,29 @@
 import { browser } from 'wxt/browser';
 import { classifyMediaResource } from '~/src/core/detection/classify-media';
+import { detectAdapterMedia } from '~/src/core/detection/adapters/registry';
 import { discoverMediaItems } from '~/src/core/discovery/registry';
 import { pageDiscoveryRequestSchema } from '~/src/shared/discovery';
 import type { CandidateObservation } from '~/src/shared/media';
 
 const observed = new Set<string>();
+const adapterDetectedPages = new Set<string>();
+
+function reportObservation(candidate: CandidateObservation): void {
+  const identity = `${candidate.kind}\u0000${candidate.url}`;
+  if (observed.has(identity)) return;
+  observed.add(identity);
+  void browser.runtime.sendMessage({ type: 'candidate:observe', candidate }).catch(() => {
+    observed.delete(identity);
+  });
+}
 
 function report(rawUrl: string, source: CandidateObservation['source'], mimeType?: string): void {
   const url = rawUrl.trim();
-  if (!url || observed.has(url)) return;
+  if (!url) return;
 
   const kind = classifyMediaResource(url, mimeType, { includeSegments: source === 'dom' });
   if (!kind) return;
 
-  observed.add(url);
   const candidate: CandidateObservation = {
     kind,
     source,
@@ -22,9 +32,20 @@ function report(rawUrl: string, source: CandidateObservation['source'], mimeType
     ...(mimeType ? { mimeType } : {}),
   };
 
-  void browser.runtime.sendMessage({ type: 'candidate:observe', candidate }).catch(() => {
-    observed.delete(url);
-  });
+  reportObservation(candidate);
+}
+
+function scanDetectionAdapters(): void {
+  let pageUrl: URL;
+  try {
+    pageUrl = new URL(location.href);
+  } catch {
+    return;
+  }
+  if (adapterDetectedPages.has(pageUrl.href)) return;
+  const candidates = detectAdapterMedia(document, pageUrl);
+  if (candidates.length) adapterDetectedPages.add(pageUrl.href);
+  for (const candidate of candidates) reportObservation(candidate);
 }
 
 function scanMediaElements(root: ParentNode = document): void {
@@ -69,6 +90,11 @@ export default defineContentScript({
     const start = () => {
       scanMediaElements();
       scanPerformanceEntries();
+      scanDetectionAdapters();
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', scanDetectionAdapters, { once: true });
+      }
 
       new MutationObserver((mutations) => {
         for (const mutation of mutations) {
@@ -79,6 +105,7 @@ export default defineContentScript({
             if (node instanceof Element) {
               if (node.matches('video, audio, source')) scanMediaElements(node.parentNode ?? document);
               else scanMediaElements(node);
+              if (node.matches('script') || node.querySelector('script')) scanDetectionAdapters();
             }
           }
         }

@@ -20,6 +20,10 @@ import {
 } from '~/src/background/task-diagnostics-repository';
 import { pageDiscoveryResponseSchema } from '~/src/shared/discovery';
 import { runtimeRequestSchema } from '~/src/shared/media';
+import {
+  configureSiteRequestAdapterForTab,
+  removeSiteRequestAdapterForTab,
+} from '~/src/browser/request-adapters/registry';
 
 function responseHeader(
   headers: Browser.webRequest.HttpHeader[] | undefined,
@@ -67,6 +71,7 @@ export default defineBackground(() => {
 
   browser.tabs.onRemoved.addListener((tabId) => {
     void clearCandidates(tabId);
+    void removeSiteRequestAdapterForTab(tabId);
   });
 
   browser.runtime.onMessage.addListener(async (message: unknown, sender) => {
@@ -102,6 +107,17 @@ export default defineBackground(() => {
         pageUrl.searchParams.set('tabId', String(request.tabId));
         pageUrl.searchParams.set('candidateId', request.candidateId);
         await browser.tabs.create({ url: pageUrl.href });
+        return { ok: true };
+      }
+      case 'request-adapter:configure': {
+        const downloaderTabId = sender.tab?.id;
+        const downloaderUrl = browser.runtime.getURL('/downloader.html');
+        if (downloaderTabId === undefined || !sender.url?.startsWith(downloaderUrl)) {
+          return { ok: false, error: 'A request adapter can only be configured by the downloader page.' };
+        }
+        const candidate = await findCandidate(request.sourceTabId, request.candidateId);
+        if (!candidate) return { ok: false, error: 'The media candidate has expired.' };
+        await configureSiteRequestAdapterForTab(candidate, downloaderTabId);
         return { ok: true };
       }
       case 'manager:open': {

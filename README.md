@@ -22,11 +22,13 @@ pnpm build
 
 ## Current scope
 
-- Detect progressive video/audio, HLS playlists, DASH manifests, and blob media.
+- Detect progressive video/audio, HLS playlists, DASH manifests, site-exposed DASH metadata, and blob media.
 - Download progressive HTTP(S) media using the browser download manager.
 - Parse HLS master and media playlists.
 - Download HLS VOD playlists, including standard `AES-128` identity encryption.
 - Resolve external HLS audio renditions and merge separate audio/video playlists into one MP4.
+- Download static, non-DRM DASH MP4 tracks described by `SegmentTemplate`, `SegmentList`, or single-file `SegmentBase`/SIDX, then losslessly merge separate video and audio into one indexed MP4.
+- Detect Bilibili's page-embedded `window.__playinfo__` DASH metadata through an isolated site adapter.
 - Choose a persistent HLS output format; MP4 is the default.
 - Download MPEG-TS HLS into a resumable `.part.ts`, then losslessly remux H.264/AAC streams to a finalized, indexed MP4.
 - Discover all episodes from supported series pages and add them to a persistent batch queue.
@@ -41,6 +43,23 @@ pnpm build
 - Keep bounded per-task diagnostics with structured failure categories and exportable, query-string-redacted JSON reports.
 - Validate committed MP4/TS output structure before marking a task complete, including MP4 media tracks and duration.
 - Refuse DRM-like HLS encryption methods and unsupported live playlists.
+- Refuse DRM-protected, live, and multi-period DASH manifests instead of producing partial output.
+
+## DASH and detection adapters
+
+The DASH protocol layer lives in `src/core/protocols/dash.ts`, while byte-range
+index resolution and downloads live in `src/core/mp4/sidx.ts` and
+`src/core/dash/`. It does not contain site hostnames or page-specific fields.
+
+Sites that expose playable media without requesting an MPD can add a detection
+adapter under `src/core/detection/adapters/`. The Bilibili adapter is the first
+example: it matches only Bilibili video/play pages and converts embedded
+`__playinfo__` tracks into the same generic DASH model, including ordered CDN
+fallback URLs. Its request adapter installs a session-only header rule scoped
+to the active downloader tab and Bilibili CDN domains; closing that tab removes
+the rule. Exact-range responses are required for single-file DASH so a server
+that ignores `Range` cannot make the extension buffer the entire source file in
+memory.
 
 ## HLS site adapters
 

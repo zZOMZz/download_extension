@@ -5,7 +5,7 @@ export default defineConfig({
   manifest: {
     name: 'Open Media Downloader',
     description: 'Discover and download authorized, non-DRM web media.',
-    permissions: ['downloads', 'storage', 'tabs', 'webRequest'],
+    permissions: ['declarativeNetRequestWithHostAccess', 'downloads', 'storage', 'tabs', 'webRequest'],
     host_permissions: ['http://*/*', 'https://*/*'],
     action: {
       default_title: 'Open Media Downloader',

@@ -179,7 +179,7 @@ export function App() {
       </section>
 
       <label className="output-setting">
-        <span>{t('hlsOutput')}</span>
+        <span>{t('streamOutput')}</span>
         <select value={outputFormat} onChange={(event) => void changeOutputFormat(event.target.value)}>
           <option value="mp4">{t('mp4Recommended')}</option>
           <option value="original">{t('originalStreamFormat')}</option>
