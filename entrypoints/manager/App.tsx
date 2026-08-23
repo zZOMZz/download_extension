@@ -18,6 +18,13 @@ import {
   type WritableDirectoryHandle,
 } from '~/src/browser/directory-output-writer';
 import {
+  loadPersistedDirectoryHandle,
+  persistDirectoryHandle,
+  queryDirectoryPermission,
+  requestDirectoryPermission,
+  type PersistedDirectoryHandle,
+} from '~/src/browser/directory-handle-store';
+import {
   readSettings,
   setLanguage as persistLanguage,
   setNetworkSettings as persistNetworkSettings,
@@ -38,7 +45,16 @@ import {
   type NetworkRetryEvent,
 } from '~/src/core/hls/download-hls';
 import { inspectHlsUrl, type InspectedHls } from '~/src/core/hls/inspect-hls';
-import { hlsPlaylistFingerprint, reconcileCheckpointFile } from '~/src/core/hls/resume';
+import {
+  checkpointMatchesDirectory,
+  hlsPlaylistFingerprint,
+  reconcileCheckpointFile,
+} from '~/src/core/hls/resume';
+import {
+  HostHealthController,
+  type HostHealthSnapshot,
+  type NetworkRequestCoordinator,
+} from '~/src/core/network/host-health';
 import { runTaskPool } from '~/src/core/task-pool';
 import { classifyTaskError } from '~/src/core/task-error';
 import { createTranslator, LANGUAGE_OPTIONS, type MessageKey, type Translator } from '~/src/shared/i18n';
@@ -227,11 +243,15 @@ function partialFilename(filename: string): string {
   return `${filename.replace(/\.[^.]+$/, '')}.part.ts`;
 }
 
-function configuredNetworkPolicy(settings: NetworkSettings): HlsNetworkPolicy {
+function configuredNetworkPolicy(
+  settings: NetworkSettings,
+  requestCoordinator?: NetworkRequestCoordinator,
+): HlsNetworkPolicy {
   return {
     maxAttempts: settings.maxAttempts,
     firstByteTimeoutMs: settings.firstByteTimeoutSeconds * 1_000,
     idleTimeoutMs: settings.idleTimeoutSeconds * 1_000,
+    ...(requestCoordinator ? { requestCoordinator } : {}),
   };
 }
 
@@ -326,6 +346,8 @@ export function App() {
   const [networkSettings, setNetworkSettings] = useState<NetworkSettings>(NETWORK_PRESETS.resilient);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [directory, setDirectory] = useState<WritableDirectoryHandle | null>(null);
+  const [directoryHandleId, setDirectoryHandleId] = useState<string | null>(null);
+  const [rememberedDirectory, setRememberedDirectory] = useState<PersistedDirectoryHandle | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -333,6 +355,7 @@ export function App() {
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [diagnosticEvents, setDiagnosticEvents] = useState<Record<string, TaskDiagnosticEvent[]>>({});
   const [diagnosticsLoadingId, setDiagnosticsLoadingId] = useState<string | null>(null);
+  const [hostHealth, setHostHealth] = useState<HostHealthSnapshot[]>([]);
   const abortController = useRef<AbortController | null>(null);
   const t = useMemo(() => createTranslator(language), [language]);
 
@@ -402,12 +425,27 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [settings, storedTasks] = await Promise.all([readSettings(), listPersistentDownloadTasks()]);
+        const [settings, storedTasks, persistedDirectory] = await Promise.all([
+          readSettings(),
+          listPersistentDownloadTasks(),
+          loadPersistedDirectoryHandle().catch((cause) => {
+            console.warn('Unable to load the remembered output directory.', cause);
+            return null;
+          }),
+        ]);
         const settingsT = createTranslator(settings.language);
         setLanguage(settings.language);
         setOutputFormat(settings.outputFormat);
         setTaskConcurrency(settings.taskConcurrency);
         setNetworkSettings(settings.network);
+        if (persistedDirectory) {
+          setRememberedDirectory(persistedDirectory);
+          const permission = await queryDirectoryPermission(persistedDirectory.handle).catch(() => 'prompt' as const);
+          if (permission === 'granted') {
+            setDirectory(persistedDirectory.handle);
+            setDirectoryHandleId(persistedDirectory.id);
+          }
+        }
         const interrupted = storedTasks.filter(
           ({ status }) => status === 'resolving' || status === 'downloading',
         );
@@ -449,14 +487,36 @@ export function App() {
 
   const chooseDirectory = async () => {
     const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
-    if (!picker) {
-      setError(t('unsupportedDirectoryOutput'));
-      return;
-    }
     try {
+      if (!directory && rememberedDirectory) {
+        try {
+          const permission = await requestDirectoryPermission(rememberedDirectory.handle);
+          if (permission === 'granted') {
+            setDirectory(rememberedDirectory.handle);
+            setDirectoryHandleId(rememberedDirectory.id);
+            setError(null);
+            return;
+          }
+        } catch (cause) {
+          console.warn('Unable to restore access to the remembered output directory.', cause);
+        }
+      }
+      if (!picker) {
+        setError(t('unsupportedDirectoryOutput'));
+        return;
+      }
       const handle = await picker({ mode: 'readwrite' });
       setDirectory(handle);
+      setDirectoryHandleId(null);
       setError(null);
+      try {
+        const persisted = await persistDirectoryHandle(handle);
+        setRememberedDirectory(persisted);
+        setDirectoryHandleId(persisted.id);
+      } catch (cause) {
+        console.warn('Unable to remember the output directory.', cause);
+        setError(t('unableRememberOutputFolder'));
+      }
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
         setError(cause instanceof Error ? cause.message : t('unableOpenDirectory'));
@@ -486,8 +546,12 @@ export function App() {
     setTasks((current) => current.map((item) => item.id === taskId ? { ...item, progress } : item));
   };
 
-  const executeTask = async (initialTask: DownloadTask, signal: AbortSignal) => {
-    const networkPolicy = configuredNetworkPolicy(networkSettings);
+  const executeTask = async (
+    initialTask: DownloadTask,
+    signal: AbortSignal,
+    requestCoordinator: NetworkRequestCoordinator,
+  ) => {
+    const networkPolicy = configuredNetworkPolicy(networkSettings, requestCoordinator);
     let latestProgress = initialTask.progress;
     let task = await persistTask(resetTaskState(initialTask, 'resolving'));
     await recordTaskEvent(task.id, 'resolve-started');
@@ -563,7 +627,10 @@ export function App() {
         const fingerprint = hlsPlaylistFingerprint(hls.media);
         const expectedPartialFilename = partialFilename(details.filename);
         let checkpoint = task.checkpoint;
-        if (checkpoint && checkpoint.directoryName !== directory.name) {
+        if (checkpoint && !checkpointMatchesDirectory(checkpoint, {
+          name: directory.name,
+          ...(directoryHandleId ? { handleId: directoryHandleId } : {}),
+        })) {
           throw new Error(t('chooseOriginalFolderResume', { name: checkpoint.directoryName }));
         }
         if (checkpoint && (
@@ -586,6 +653,7 @@ export function App() {
           version: 1,
           playlistFingerprint: fingerprint,
           directoryName: directory.name,
+          ...(directoryHandleId ? { directoryHandleId } : {}),
           partialFilename: expectedPartialFilename,
           finalFilename: details.filename,
           completedSegments: reconciled.completedSegments,
@@ -776,6 +844,11 @@ export function App() {
     setRunning(true);
     setError(null);
     setSummary(null);
+    setHostHealth([]);
+    const hostController = new HostHealthController({
+      maxConcurrency: taskConcurrency,
+      onChange: setHostHealth,
+    });
     try {
       const initial = (await listPersistentDownloadTasks()).filter(
         ({ status }) => status === 'queued' || status === 'waiting',
@@ -797,7 +870,7 @@ export function App() {
         await runTaskPool({
           items: ready,
           concurrency: taskConcurrency,
-          run: (task) => executeTask(task, controller.signal),
+          run: (task) => executeTask(task, controller.signal, hostController),
           shouldStop: () => controller.signal.aborted,
         });
       }
@@ -956,7 +1029,11 @@ export function App() {
         </div>
         <div className="hero-actions">
           <button className="secondary" onClick={() => void chooseDirectory()} disabled={running}>
-            {directory ? t('folderSelected', { name: directory.name }) : t('chooseOutputFolder')}
+            {directory
+              ? t('folderSelected', { name: directory.name })
+              : rememberedDirectory
+                ? t('reconnectFolder', { name: rememberedDirectory.handle.name })
+                : t('chooseOutputFolder')}
           </button>
           <button className="primary" onClick={() => void startQueue()} disabled={running || queuedCount === 0}>
             {running
@@ -971,6 +1048,19 @@ export function App() {
 
       {error && <div className="notice error">{error}</div>}
       {summary && <div className="notice info">{summary}</div>}
+      {hostHealth.map((health) => (
+        <div className="notice host-health" key={health.host}>
+          {health.blockedUntil && health.blockedUntil > Date.now()
+            ? t('hostProtectionCooling', {
+              host: health.host,
+              time: new Date(health.blockedUntil).toLocaleTimeString(language),
+            })
+            : t('hostProtectionLimited', {
+              host: health.host,
+              limit: health.concurrencyLimit,
+            })}
+        </div>
+      ))}
       {loading && <div className="notice info">{t('loadingManager')}</div>}
 
       {discovered.length > 0 && (

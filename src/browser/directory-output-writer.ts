@@ -8,6 +8,9 @@ export interface WritableDirectoryHandle {
   readonly name: string;
   getFileHandle(name: string, options?: { create?: boolean }): Promise<WritableFileHandle>;
   removeEntry(name: string): Promise<void>;
+  queryPermission?(options: { mode: 'readwrite' }): Promise<PermissionState>;
+  requestPermission?(options: { mode: 'readwrite' }): Promise<PermissionState>;
+  isSameEntry?(other: WritableDirectoryHandle): Promise<boolean>;
 }
 
 export interface WritableFileHandle {

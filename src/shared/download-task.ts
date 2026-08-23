@@ -38,6 +38,7 @@ export const downloadCheckpointSchema = z.object({
   version: z.literal(1),
   playlistFingerprint: z.string().min(1),
   directoryName: z.string().min(1),
+  directoryHandleId: z.string().min(1).optional(),
   partialFilename: z.string().min(1),
   finalFilename: z.string().min(1),
   completedSegments: z.number().int().nonnegative(),

@@ -35,6 +35,9 @@ pnpm build
 - Configure request attempts, first-byte/idle timeouts, task recovery rounds, and retry delays from one manager settings panel.
 - Move exhausted transient failures into a persistent cooldown state, release their pool slot, refresh signed media URLs, and retry automatically.
 - Persist segment-boundary checkpoints and reconcile them with the committed partial file after failures or manager restarts.
+- Remember the selected output directory in IndexedDB, restore it when permission remains granted, and offer one-click reconnection otherwise.
+- Adapt request concurrency per host after repeated 429, 5xx, timeout, or transport failures, including a short circuit-breaker cooldown.
+- Keep bounded per-task diagnostics with structured failure categories and exportable, query-string-redacted JSON reports.
 - Refuse DRM-like HLS encryption methods and unsupported live playlists.
 
 ## HLS site adapters
@@ -68,7 +71,8 @@ playlist order.
 
 Resumable MPEG-TS downloads keep media bytes in the selected output directory;
 only compact checkpoint metadata is stored with the task. After reopening the
-manager, select the original directory and use Resume. MP4 output temporarily
+manager, the remembered directory is restored automatically when permission is
+still granted; otherwise reconnect it with one click and use Resume. MP4 output temporarily
 needs space for both the `.part.ts` and final `.mp4`; the partial file is removed
 only after finalization succeeds. HLS streams that already use fragmented MP4
 initialization segments still use the direct, non-resumable path.

@@ -51,6 +51,7 @@ export function buildTaskDiagnosticReport(
       checkpoint: task.checkpoint ? {
         version: task.checkpoint.version,
         directoryName: task.checkpoint.directoryName,
+        directoryHandleId: task.checkpoint.directoryHandleId,
         partialFilename: task.checkpoint.partialFilename,
         finalFilename: task.checkpoint.finalFilename,
         completedSegments: task.checkpoint.completedSegments,

@@ -1,5 +1,6 @@
 import type { HlsByteRange, HlsKey, HlsMap, HlsMediaPlaylist } from '~/src/core/protocols/hls';
 import type { DownloadTaskProgress } from '~/src/shared/download-task';
+import type { NetworkRequestCoordinator } from '~/src/core/network/host-health';
 import { resolveHlsAes128Key } from './key-resolver';
 
 export interface BinaryWriter {
@@ -18,6 +19,7 @@ export interface HlsNetworkPolicy {
   maxAttempts?: number;
   firstByteTimeoutMs?: number;
   idleTimeoutMs?: number;
+  requestCoordinator?: NetworkRequestCoordinator;
 }
 
 export interface HlsDownloadOptions {
@@ -77,6 +79,7 @@ interface ResolvedNetworkPolicy {
   maxAttempts: number;
   firstByteTimeoutMs: number;
   idleTimeoutMs: number;
+  requestCoordinator?: NetworkRequestCoordinator;
 }
 
 interface FetchChunkEvent {
@@ -135,6 +138,7 @@ function networkPolicy(options: HlsNetworkPolicy | undefined): ResolvedNetworkPo
     maxAttempts: Math.max(1, Math.floor(options?.maxAttempts ?? DEFAULT_NETWORK_POLICY.maxAttempts)),
     firstByteTimeoutMs: Math.max(1, options?.firstByteTimeoutMs ?? DEFAULT_NETWORK_POLICY.firstByteTimeoutMs),
     idleTimeoutMs: Math.max(1, options?.idleTimeoutMs ?? DEFAULT_NETWORK_POLICY.idleTimeoutMs),
+    ...(options?.requestCoordinator ? { requestCoordinator: options.requestCoordinator } : {}),
   };
 }
 
@@ -292,27 +296,32 @@ async function fetchBytes(
     if (signal?.aborted) throw abortReason(signal);
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      const response = await withTimeout(
-        fetch(url, {
-          credentials: 'include',
-          ...(range ? { headers: rangeHeader(range) } : {}),
-          signal: controller.signal,
-        }),
-        policy.firstByteTimeoutMs,
-        () => new NetworkTimeoutError(`The server did not respond within ${Math.round(policy.firstByteTimeoutMs / 1_000)} seconds.`),
-        controller,
-      );
-      if (!response.ok) {
-        throw new HttpStatusError(response.status, parseRetryAfter(response.headers.get('Retry-After')));
-      }
-      let bytes = await readResponseBytes(response, policy, controller, callbacks.onChunk);
-      if (range && response.status === 200) {
-        bytes = bytes.slice(range.offset, range.offset + range.length);
-      }
-      if (range && bytes.byteLength !== range.length) {
-        throw new Error(`Expected ${range.length} bytes but received ${bytes.byteLength}.`);
-      }
-      return bytes;
+      const request = async () => {
+        const response = await withTimeout(
+          fetch(url, {
+            credentials: 'include',
+            ...(range ? { headers: rangeHeader(range) } : {}),
+            signal: controller.signal,
+          }),
+          policy.firstByteTimeoutMs,
+          () => new NetworkTimeoutError(`The server did not respond within ${Math.round(policy.firstByteTimeoutMs / 1_000)} seconds.`),
+          controller,
+        );
+        if (!response.ok) {
+          throw new HttpStatusError(response.status, parseRetryAfter(response.headers.get('Retry-After')));
+        }
+        let bytes = await readResponseBytes(response, policy, controller, callbacks.onChunk);
+        if (range && response.status === 200) {
+          bytes = bytes.slice(range.offset, range.offset + range.length);
+        }
+        if (range && bytes.byteLength !== range.length) {
+          throw new Error(`Expected ${range.length} bytes but received ${bytes.byteLength}.`);
+        }
+        return bytes;
+      };
+      return await (policy.requestCoordinator
+        ? policy.requestCoordinator.run(url, request, signal)
+        : request());
     } catch (error) {
       if (signal?.aborted) throw abortReason(signal);
       lastError = error;
@@ -354,21 +363,26 @@ export async function fetchTextResource(
     if (signal?.aborted) throw abortReason(signal);
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      const response = await withTimeout(
-        fetch(url, { credentials: 'include', signal: controller.signal }),
-        policy.firstByteTimeoutMs,
-        () => new NetworkTimeoutError(`The server did not respond within ${Math.round(policy.firstByteTimeoutMs / 1_000)} seconds.`),
-        controller,
-      );
-      if (!response.ok) {
-        throw new HttpStatusError(response.status, parseRetryAfter(response.headers.get('Retry-After')));
-      }
-      return await withTimeout(
-        response.text(),
-        policy.idleTimeoutMs,
-        () => new NetworkTimeoutError(`The text response did not finish within ${Math.round(policy.idleTimeoutMs / 1_000)} seconds.`),
-        controller,
-      );
+      const request = async () => {
+        const response = await withTimeout(
+          fetch(url, { credentials: 'include', signal: controller.signal }),
+          policy.firstByteTimeoutMs,
+          () => new NetworkTimeoutError(`The server did not respond within ${Math.round(policy.firstByteTimeoutMs / 1_000)} seconds.`),
+          controller,
+        );
+        if (!response.ok) {
+          throw new HttpStatusError(response.status, parseRetryAfter(response.headers.get('Retry-After')));
+        }
+        return withTimeout(
+          response.text(),
+          policy.idleTimeoutMs,
+          () => new NetworkTimeoutError(`The text response did not finish within ${Math.round(policy.idleTimeoutMs / 1_000)} seconds.`),
+          controller,
+        );
+      };
+      return await (policy.requestCoordinator
+        ? policy.requestCoordinator.run(url, request, signal)
+        : request());
     } catch (error) {
       if (signal?.aborted) throw abortReason(signal);
       lastError = error;

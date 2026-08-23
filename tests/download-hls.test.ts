@@ -8,6 +8,7 @@ import {
   type HlsDownloadProgress,
 } from '../src/core/hls/download-hls';
 import { parseHlsPlaylist, type HlsMediaPlaylist } from '../src/core/protocols/hls';
+import type { NetworkRequestCoordinator } from '../src/core/network/host-health';
 
 class TestWriter implements BinaryWriter {
   readonly chunks: Uint8Array[] = [];
@@ -115,6 +116,26 @@ streamed.ts
       currentSpeedBytesPerSecond: 0,
     });
     expect(progress.some(({ currentSpeedBytesPerSecond }) => (currentSpeedBytesPerSecond ?? 0) > 0)).toBe(true);
+  });
+
+  it('runs segment requests through the configured host coordinator', async () => {
+    const playlist = mediaPlaylist(`#EXTM3U
+#EXTINF:4,
+coordinated.ts
+#EXT-X-ENDLIST`);
+    vi.stubGlobal('fetch', vi.fn(async () => response(new Uint8Array([1, 2]))));
+    const requestedUrls: string[] = [];
+    const coordinator: NetworkRequestCoordinator = {
+      run: async <T,>(url: string, operation: () => Promise<T>) => {
+        requestedUrls.push(url);
+        return operation();
+      },
+    };
+
+    await downloadHlsPlaylist(playlist, new TestWriter(), {
+      networkPolicy: { requestCoordinator: coordinator },
+    });
+    expect(requestedUrls).toEqual(['https://cdn.example/vod/coordinated.ts']);
   });
 
   it('resumes from a completed segment boundary without requesting earlier segments', async () => {

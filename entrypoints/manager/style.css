@@ -47,6 +47,7 @@ select { min-width: 190px; border: 1px solid #ccd4ca; border-radius: 9px; paddin
 .notice { margin: 14px 0; border-radius: 11px; padding: 12px 14px; }
 .info { color: #31577b; background: #e7f1fb; }
 .error { color: #8a2929; background: #fee8e5; }
+.host-health { color: #7a541f; background: #faecd5; }
 .empty { padding: 42px 12px; color: #718078; text-align: center; }
 .task-list { display: grid; gap: 10px; }
 .task { display: flex; justify-content: space-between; gap: 20px; border: 1px solid #e0e4dd; border-radius: 14px; padding: 15px; background: #fbfcfa; }
