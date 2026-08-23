@@ -1,0 +1,46 @@
+import { describe, expect, it } from 'vitest';
+import { hlsPlaylistFingerprint, reconcileCheckpointFile } from '../src/core/hls/resume';
+import { parseHlsPlaylist } from '../src/core/protocols/hls';
+import type { DownloadCheckpoint } from '../src/shared/download-task';
+
+function playlist(url: string) {
+  const parsed = parseHlsPlaylist(`#EXTM3U
+#EXT-X-MEDIA-SEQUENCE:20
+#EXTINF:4,
+one.ts?sign=old
+#EXTINF:4,
+two.ts?sign=old
+#EXT-X-ENDLIST`, url);
+  if (parsed.type !== 'media') throw new Error('Expected a media playlist.');
+  return parsed;
+}
+
+describe('HLS resume metadata', () => {
+  it('keeps the playlist identity stable when only signed query parameters change', () => {
+    const first = playlist('https://cdn.example/show/index.m3u8?token=one');
+    const second = playlist('https://cdn.example/show/index.m3u8?token=two');
+    second.segments[0]!.uri = second.segments[0]!.uri.replace('sign=old', 'sign=fresh');
+    second.segments[1]!.uri = second.segments[1]!.uri.replace('sign=old', 'sign=fresh');
+    expect(hlsPlaylistFingerprint(first)).toBe(hlsPlaylistFingerprint(second));
+  });
+
+  it('rolls back to the last segment boundary present in the committed file', () => {
+    const checkpoint: DownloadCheckpoint = {
+      version: 1,
+      playlistFingerprint: 'test',
+      directoryName: 'Downloads',
+      partialFilename: 'video.part.ts',
+      finalFilename: 'video.mp4',
+      completedSegments: 3,
+      totalSegments: 4,
+      bytesWritten: 300,
+      segmentEndOffsets: [100, 200, 300],
+      updatedAt: 1,
+    };
+    expect(reconcileCheckpointFile(checkpoint, 250)).toEqual({
+      completedSegments: 2,
+      bytesWritten: 200,
+      segmentEndOffsets: [100, 200],
+    });
+  });
+});

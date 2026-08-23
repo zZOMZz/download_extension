@@ -1,0 +1,7 @@
+node_modules/
+.pnpm-store/
+.wxt/
+.output/
+coverage/
+*.log
+.DS_Store
