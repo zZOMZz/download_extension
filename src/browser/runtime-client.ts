@@ -51,6 +51,13 @@ export async function configureCandidateRequestAdapter(
   });
 }
 
+export async function configureManagerRequestAdapters(adapterIds: readonly string[]): Promise<void> {
+  await runRuntimeAction({
+    type: 'request-adapter:configure-manager',
+    adapterIds: [...new Set(adapterIds)],
+  });
+}
+
 export async function runRuntimeAction(request: RuntimeRequest): Promise<void> {
   const response: unknown = await browser.runtime.sendMessage(request);
   const parsed = actionResponseSchema.parse(response);

@@ -4,6 +4,7 @@ import {
   addPersistentDownloadTasks,
   appendPersistentTaskDiagnosticEvent,
   clearCompletedPersistentDownloadTasks,
+  configureManagerRequestAdapters,
   listPersistentDownloadTasks,
   listPersistentTaskDiagnosticEvents,
   removePersistentDownloadTask,
@@ -663,6 +664,7 @@ export function App() {
       const initial = (await listPersistentDownloadTasks()).filter(
         ({ status }) => status === 'queued' || status === 'waiting',
       );
+      await configureManagerRequestAdapters(initial.map(({ source }) => source.adapterId));
       const includedIds = new Set(initial.map(({ id }) => id));
       while (!controller.signal.aborted) {
         const candidates = (await listPersistentDownloadTasks()).filter(

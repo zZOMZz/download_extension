@@ -9,9 +9,9 @@ export const SITE_REQUEST_ADAPTERS: readonly SiteRequestAdapter[] = Object.freez
   bilibiliRequestAdapter,
 ]);
 
-function ruleIdForTab(tabId: number): number {
+function ruleIdForTab(tabId: number, adapterIndex = 0): number {
   if (!Number.isInteger(tabId) || tabId < 0) throw new Error('Invalid downloader tab id.');
-  return RULE_ID_OFFSET + tabId;
+  return RULE_ID_OFFSET + tabId + adapterIndex * 100_000_000;
 }
 
 function findAdapter(id: string): SiteRequestAdapter {
@@ -38,8 +38,27 @@ export async function configureSiteRequestAdapterForTab(
   });
 }
 
+export async function configureSiteRequestAdaptersForManager(
+  adapterIds: readonly string[],
+  managerTabId: number,
+): Promise<void> {
+  const requested = new Set(adapterIds);
+  const rules = SITE_REQUEST_ADAPTERS.flatMap((adapter, index) =>
+    requested.has(adapter.id)
+      ? adapter.createManagerSessionRules?.(
+          managerTabId,
+          browser.runtime.id,
+          ruleIdForTab(managerTabId, index),
+        ) ?? []
+      : []);
+  await browser.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: SITE_REQUEST_ADAPTERS.map((_, index) => ruleIdForTab(managerTabId, index)),
+    addRules: rules,
+  });
+}
+
 export async function removeSiteRequestAdapterForTab(tabId: number): Promise<void> {
   await browser.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [ruleIdForTab(tabId)],
+    removeRuleIds: SITE_REQUEST_ADAPTERS.map((_, index) => ruleIdForTab(tabId, index)),
   });
 }

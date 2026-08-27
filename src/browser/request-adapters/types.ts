@@ -29,4 +29,9 @@ export interface SiteRequestAdapter {
     extensionId: string,
     ruleId: number,
   ): SiteRequestRule[];
+  createManagerSessionRules?(
+    managerTabId: number,
+    extensionId: string,
+    ruleId: number,
+  ): SiteRequestRule[];
 }

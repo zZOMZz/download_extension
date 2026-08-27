@@ -102,6 +102,10 @@ export const runtimeRequestSchema = z.discriminatedUnion('type', [
     sourceTabId: z.number().int().nonnegative(),
   }),
   z.object({
+    type: z.literal('request-adapter:configure-manager'),
+    adapterIds: z.string().min(1).array(),
+  }),
+  z.object({
     type: z.literal('manager:open'),
     tabId: z.number().int().nonnegative().optional(),
   }),

@@ -29,6 +29,7 @@ pnpm build
 - Resolve external HLS audio renditions and merge separate audio/video playlists into one MP4.
 - Download static, non-DRM DASH MP4 tracks described by `SegmentTemplate`, `SegmentList`, or single-file `SegmentBase`/SIDX, then losslessly merge separate video and audio into one indexed MP4.
 - Detect Bilibili's page-embedded `window.__playinfo__` DASH metadata through an isolated site adapter.
+- Discover Bilibili multi-P videos and UGC collections, flatten every page into a queued DASH task, and resolve signed tracks on demand.
 - Choose a persistent HLS output format; MP4 is the default.
 - Download MPEG-TS HLS into a resumable `.part.ts`, then losslessly remux H.264/AAC streams to a finalized, indexed MP4.
 - Discover all episodes from supported series pages and add them to a persistent batch queue.
@@ -67,8 +68,8 @@ adapter under `src/core/detection/adapters/`. The Bilibili adapter is the first
 example: it matches only Bilibili video/play pages and converts embedded
 `__playinfo__` tracks into the same generic DASH model, including ordered CDN
 fallback URLs. Its request adapter installs a session-only header rule scoped
-to the active downloader tab and Bilibili CDN domains; closing that tab removes
-the rule. Exact-range responses are required for single-file DASH so a server
+to the active downloader or manager tab and Bilibili API/CDN domains; closing
+that tab removes the rule. Exact-range responses are required for single-file DASH so a server
 that ignores `Range` cannot make the extension buffer the entire source file in
 memory.
 
@@ -93,7 +94,11 @@ The registry rejects overlapping matches instead of silently choosing one.
 Collection and episode discovery is separate from HLS protocol compatibility.
 Discovery adapters live in `src/core/discovery/adapters/`; each one discovers
 items from the current page and resolves a fresh media URL only when its queued
-task starts. The first adapter supports 2rk series detail pages.
+task starts. The 2rk adapter reads episode links from a detail page. The
+Bilibili adapter reads the official video-detail response, expands multi-P and
+UGC collection pages, then resolves each queued `bvid`/`cid` through the play
+endpoint immediately before download. Site JSON and request-header behavior
+remain in Bilibili-specific adapter modules.
 
 Batch tasks are stored in `browser.storage.local` and are independent of the
 source tab after they are added. The manager uses a bounded task pool and

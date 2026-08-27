@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createBilibiliSessionRule } from '../src/browser/request-adapters/bilibili';
+import {
+  createBilibiliManagerSessionRule,
+  createBilibiliSessionRule,
+} from '../src/browser/request-adapters/bilibili';
 import type { MediaCandidate } from '../src/shared/media';
 
 function candidate(overrides: Partial<MediaCandidate> = {}): MediaCandidate {
@@ -45,5 +48,25 @@ describe('Bilibili request adapter', () => {
     expect(() => createBilibiliSessionRule(candidate({
       siteAdapterId: 'other-site',
     }), 42, 'extension-id', 10_000_042)).toThrow(/unrelated/i);
+  });
+
+  it('uses one manager-scoped rule for API and CDN requests from batch tasks', () => {
+    expect(createBilibiliManagerSessionRule(42, 'extension-id', 10_000_042)).toEqual({
+      id: 10_000_042,
+      priority: 1,
+      action: {
+        type: 'modifyHeaders',
+        requestHeaders: [
+          { header: 'Referer', operation: 'set', value: 'https://www.bilibili.com/' },
+          { header: 'Origin', operation: 'set', value: 'https://www.bilibili.com' },
+        ],
+      },
+      condition: {
+        tabIds: [42],
+        initiatorDomains: ['extension-id'],
+        requestDomains: ['api.bilibili.com', 'bilivideo.com', 'bilivideo.cn'],
+        resourceTypes: ['xmlhttprequest', 'media', 'other'],
+      },
+    });
   });
 });

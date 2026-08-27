@@ -78,7 +78,19 @@ export default defineContentScript({
         });
       }
       try {
-        return { ok: true, items: discoverMediaItems(document, new URL(location.href)) };
+        return {
+          ok: true,
+          items: await discoverMediaItems(document, new URL(location.href), {
+            fetchText: async (url, signal) => {
+              const response = await fetch(url, {
+                credentials: 'include',
+                ...(signal ? { signal } : {}),
+              });
+              if (!response.ok) throw new Error(`Discovery request failed with HTTP ${response.status}.`);
+              return response.text();
+            },
+          }),
+        };
       } catch (cause) {
         return {
           ok: false,

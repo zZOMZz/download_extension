@@ -22,6 +22,7 @@ import { pageDiscoveryResponseSchema } from '~/src/shared/discovery';
 import { runtimeRequestSchema } from '~/src/shared/media';
 import {
   configureSiteRequestAdapterForTab,
+  configureSiteRequestAdaptersForManager,
   removeSiteRequestAdapterForTab,
 } from '~/src/browser/request-adapters/registry';
 
@@ -118,6 +119,15 @@ export default defineBackground(() => {
         const candidate = await findCandidate(request.sourceTabId, request.candidateId);
         if (!candidate) return { ok: false, error: 'The media candidate has expired.' };
         await configureSiteRequestAdapterForTab(candidate, downloaderTabId);
+        return { ok: true };
+      }
+      case 'request-adapter:configure-manager': {
+        const managerTabId = sender.tab?.id;
+        const managerUrl = browser.runtime.getURL('/manager.html');
+        if (managerTabId === undefined || !sender.url?.startsWith(managerUrl)) {
+          return { ok: false, error: 'Task request adapters can only be configured by the manager page.' };
+        }
+        await configureSiteRequestAdaptersForManager(request.adapterIds, managerTabId);
         return { ok: true };
       }
       case 'manager:open': {

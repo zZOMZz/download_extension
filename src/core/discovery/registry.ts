@@ -1,9 +1,16 @@
 import type { DiscoveredMediaItem } from '~/src/shared/discovery';
+import { bilibiliDiscoveryAdapter } from './adapters/bilibili';
 import { twoRkDiscoveryAdapter } from './adapters/two-rk';
-import type { DiscoveryResolveContext, ResolvedDiscoveredMedia, SiteDiscoveryAdapter } from './types';
+import type {
+  DiscoveryResolveContext,
+  DiscoveryScanContext,
+  ResolvedDiscoveredMedia,
+  SiteDiscoveryAdapter,
+} from './types';
 
 export const SITE_DISCOVERY_ADAPTERS: readonly SiteDiscoveryAdapter[] = Object.freeze([
   twoRkDiscoveryAdapter,
+  bilibiliDiscoveryAdapter,
 ]);
 
 function uniqueMatch(
@@ -33,8 +40,12 @@ export function supportsSiteDiscovery(rawUrl: string): boolean {
   }
 }
 
-export function discoverMediaItems(document: Document, pageUrl: URL): DiscoveredMediaItem[] {
-  return findSiteDiscoveryAdapter(pageUrl)?.discover(document, pageUrl) ?? [];
+export async function discoverMediaItems(
+  document: Document,
+  pageUrl: URL,
+  context?: DiscoveryScanContext,
+): Promise<DiscoveredMediaItem[]> {
+  return await findSiteDiscoveryAdapter(pageUrl)?.discover(document, pageUrl, context) ?? [];
 }
 
 export async function resolveDiscoveredMedia(
