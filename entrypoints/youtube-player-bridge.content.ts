@@ -1,13 +1,4 @@
-import {
-  preferYouTubeMp4MediaCapabilities,
-  preferYouTubeMp4MediaElement,
-  preferYouTubeMp4MediaSource,
-} from '~/src/core/site-adapters/youtube/playback-preference';
-
 interface YouTubePlayerWindow extends Window {
-  HTMLMediaElement?: { prototype: HTMLMediaElement };
-  ManagedMediaSource?: typeof MediaSource;
-  MediaSource?: typeof MediaSource;
   ytInitialPlayerResponse?: unknown;
   ytplayer?: {
     bootstrapPlayerResponse?: unknown;
@@ -84,17 +75,20 @@ function currentPlayerResponse(): unknown {
   return fallback;
 }
 
-function playerSnapshot(value: unknown): { value: JsonRecord; hasAdaptiveFormats: boolean } | undefined {
+function playerSnapshot(value: unknown): { value: JsonRecord; hasFormats: boolean } | undefined {
   const response = asRecord(value);
   const playability = asRecord(response?.playabilityStatus);
   const details = asRecord(response?.videoDetails);
   const streamingData = asRecord(response?.streamingData);
   if (!response || !playability || !details) return undefined;
+  const formats = Array.isArray(streamingData?.formats)
+    ? streamingData.formats.map(asRecord).filter((format): format is JsonRecord => Boolean(format))
+    : [];
   const adaptiveFormats = Array.isArray(streamingData?.adaptiveFormats)
     ? streamingData.adaptiveFormats.map(asRecord).filter((format): format is JsonRecord => Boolean(format))
     : [];
   return {
-    hasAdaptiveFormats: adaptiveFormats.length > 0,
+    hasFormats: adaptiveFormats.length > 0 || formats.length > 0,
     value: {
       playabilityStatus: {
         status: playability.status,
@@ -107,6 +101,20 @@ function playerSnapshot(value: unknown): { value: JsonRecord; hasAdaptiveFormats
         isLiveContent: details.isLiveContent,
       },
       streamingData: {
+        formats: formats.map((format) => ({
+          itag: format.itag,
+          mimeType: format.mimeType,
+          bitrate: format.bitrate,
+          averageBitrate: format.averageBitrate,
+          contentLength: format.contentLength,
+          width: format.width,
+          height: format.height,
+          url: format.url,
+          signatureCipher: format.signatureCipher,
+          cipher: format.cipher,
+          drmFamilies: format.drmFamilies,
+          licenseInfos: format.licenseInfos,
+        })),
         adaptiveFormats: adaptiveFormats.map((format) => ({
           itag: format.itag,
           mimeType: format.mimeType,
@@ -142,7 +150,7 @@ function publishPlayerResponse(): boolean {
   }
   document.querySelector(`script[${BRIDGE_ATTRIBUTE}]`)?.remove();
   document.documentElement.append(script);
-  return response.hasAdaptiveFormats;
+  return response.hasFormats;
 }
 
 function publishAfterNavigation(): void {
@@ -164,11 +172,6 @@ export default defineContentScript({
   runAt: 'document_start',
   world: 'MAIN',
   main() {
-    const pageWindow = window as YouTubePlayerWindow;
-    preferYouTubeMp4MediaSource(pageWindow.MediaSource);
-    preferYouTubeMp4MediaSource(pageWindow.ManagedMediaSource);
-    preferYouTubeMp4MediaElement(pageWindow.HTMLMediaElement?.prototype);
-    preferYouTubeMp4MediaCapabilities(pageWindow.navigator.mediaCapabilities);
     publishAfterNavigation();
     document.addEventListener('DOMContentLoaded', publishAfterNavigation);
     window.addEventListener('yt-navigate-finish', publishAfterNavigation);

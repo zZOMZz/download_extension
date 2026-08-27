@@ -13,7 +13,19 @@ export interface YouTubePlayerData {
   status: string;
   reason?: string;
   cipheredFormats: number;
+  progressive?: YouTubeProgressiveMedia;
   dash?: DashMediaSource;
+}
+
+export interface YouTubeProgressiveMedia {
+  id: string;
+  url: string;
+  mimeType: string;
+  codecs?: string;
+  bandwidth?: number;
+  contentLength?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface YouTubePlayerParseOptions {
@@ -156,6 +168,38 @@ function mimeDetails(value: unknown): { kind: DashTrack['kind']; mimeType: strin
   };
 }
 
+function progressiveFormat(value: unknown): YouTubeProgressiveMedia | undefined {
+  const format = asRecord(value);
+  if (!format || asArray(format.drmFamilies).length || asArray(format.licenseInfos).length) {
+    return undefined;
+  }
+  const id = stringValue(format.itag);
+  const rawMimeType = text(format.mimeType);
+  const mime = rawMimeType
+    ? /^video\/mp4(?:\s*;\s*codecs="([^"]+)")?/i.exec(rawMimeType)
+    : undefined;
+  const codecs = mime?.[1];
+  const codecNames = codecs?.toLowerCase() ?? '';
+  const url = googleVideoUrl(format.url);
+  if (!id || !mime || !url || !codecNames.includes('avc1') || !codecNames.includes('mp4a')) {
+    return undefined;
+  }
+  const bandwidth = positiveInteger(format.bitrate ?? format.averageBitrate);
+  const contentLength = positiveInteger(format.contentLength);
+  const width = positiveInteger(format.width);
+  const height = positiveInteger(format.height);
+  return {
+    id,
+    url,
+    mimeType: 'video/mp4',
+    ...(codecs ? { codecs } : {}),
+    ...(bandwidth === undefined ? {} : { bandwidth }),
+    ...(contentLength === undefined ? {} : { contentLength }),
+    ...(width === undefined ? {} : { width }),
+    ...(height === undefined ? {} : { height }),
+  };
+}
+
 function parseTrack(
   value: unknown,
   observedUrls: ReadonlyMap<string, string>,
@@ -264,6 +308,12 @@ function parsePlayerResponse(
     return undefined;
   }
   const streamingData = asRecord(response.streamingData);
+  const progressive = asArray(streamingData?.formats)
+    .map(progressiveFormat)
+    .filter((format): format is YouTubeProgressiveMedia => Boolean(format))
+    .sort((left, right) =>
+      (right.height ?? 0) - (left.height ?? 0) ||
+      (right.bandwidth ?? 0) - (left.bandwidth ?? 0))[0];
   const observed = observedUrlsByIdentity(options.observedMediaUrls ?? []);
   const parsedTracks = asArray(streamingData?.adaptiveFormats).map((format) => parseTrack(format, observed));
   const tracks = parsedTracks.flatMap(({ track }) => track ? [track] : []);
@@ -287,6 +337,7 @@ function parsePlayerResponse(
     status,
     ...(reason ? { reason } : {}),
     cipheredFormats,
+    ...(progressive ? { progressive } : {}),
     ...(dash ? { dash } : {}),
   };
 }

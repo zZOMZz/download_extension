@@ -24,6 +24,9 @@ const observedVideo = videoBase.replace('n=untransformed', 'n=video-token') +
   '&sig=video-signature&range=0-999&rn=1';
 const observedAudio = audioBase.replace('n=untransformed', 'n=audio-token') +
   '&sig=audio-signature&range=0-799&rn=2';
+const progressiveBase = 'https://rr3---sn-test.googlevideo.com/videoplayback' +
+  '?expire=2000000000&id=muxed-resource&itag=18&n=playable-token' +
+  '&sparams=expire,id,itag,n&sig=muxed-signature';
 
 function reusableObservedUrl(rawUrl: string): string {
   return rawUrl.replace(/&range=[^&]*/, '');
@@ -69,6 +72,48 @@ function playerScript(): string {
           initRange: { start: '0', end: '99' },
           indexRange: { start: '100', end: '199' },
           url: videoBase.replace('itag=137', 'itag=248'),
+        },
+      ],
+    },
+  })};`;
+}
+
+function sabrPlayerScript(): string {
+  return `var ytInitialPlayerResponse = ${JSON.stringify({
+    playabilityStatus: { status: 'OK' },
+    videoDetails: {
+      videoId: 'GwUwyWGHmGY',
+      title: 'SABR example video',
+      lengthSeconds: '125',
+      isLiveContent: false,
+    },
+    streamingData: {
+      serverAbrStreamingUrl: 'https://rr3---sn-test.googlevideo.com/videoplayback?sabr=1',
+      formats: [{
+        itag: 18,
+        mimeType: 'video/mp4; codecs="avc1.42001E, mp4a.40.2"',
+        bitrate: 632_414,
+        contentLength: '9876543',
+        width: 640,
+        height: 360,
+        url: progressiveBase,
+      }],
+      adaptiveFormats: [
+        {
+          itag: 137,
+          mimeType: 'video/mp4; codecs="avc1.640028"',
+          bitrate: 4_000_000,
+          width: 1920,
+          height: 1080,
+          initRange: { start: '0', end: '741' },
+          indexRange: { start: '742', end: '2717' },
+        },
+        {
+          itag: 140,
+          mimeType: 'audio/mp4; codecs="mp4a.40.2"',
+          bitrate: 128_000,
+          initRange: { start: '0', end: '722' },
+          indexRange: { start: '723', end: '1750' },
         },
       ],
     },
@@ -182,6 +227,35 @@ describe('YouTube DASH detection adapter', () => {
         expect.objectContaining({ id: '140', kind: 'audio' }),
       ]) }),
     })]);
+  });
+
+  it('falls back to the signed muxed MP4 when SABR hides adaptive track URLs', () => {
+    const player = parseYouTubePlayerResponse(sabrPlayerScript(), {
+      expectedVideoId: 'GwUwyWGHmGY',
+    });
+
+    expect(player?.dash).toBeUndefined();
+    expect(player?.progressive).toEqual({
+      id: '18',
+      url: progressiveBase,
+      mimeType: 'video/mp4',
+      codecs: 'avc1.42001E, mp4a.40.2',
+      bandwidth: 632_414,
+      contentLength: 9_876_543,
+      width: 640,
+      height: 360,
+    });
+    expect(youtubeDetectionAdapter.detect(
+      fakeDocument(sabrPlayerScript()),
+      new URL('https://www.youtube.com/watch?v=GwUwyWGHmGY'),
+    )).toEqual([{
+      kind: 'progressive',
+      source: 'dom',
+      url: progressiveBase,
+      title: 'SABR example video',
+      mimeType: 'video/mp4',
+      contentLength: 9_876_543,
+    }]);
   });
 
   it('reads the current player response published by the main-world bridge', () => {

@@ -50,14 +50,27 @@ export const youtubeDetectionAdapter: MediaDetectionAdapter = {
         ? { observedMediaUrls: context.observedResourceUrls }
         : {}),
     });
-    if (!player?.dash) return [];
+    if (!player) return [];
+    if (player.dash) {
+      return [{
+        kind: 'dash',
+        source: 'dom',
+        url: pageUrl.href,
+        title: player.title,
+        siteAdapterId: 'youtube',
+        dash: player.dash,
+      }];
+    }
+    if (!player.progressive) return [];
     return [{
-      kind: 'dash',
+      kind: 'progressive',
       source: 'dom',
-      url: pageUrl.href,
+      url: player.progressive.url,
       title: player.title,
-      siteAdapterId: 'youtube',
-      dash: player.dash,
+      mimeType: player.progressive.mimeType,
+      ...(player.progressive.contentLength === undefined
+        ? {}
+        : { contentLength: player.progressive.contentLength }),
     }];
   },
 };
