@@ -1,4 +1,13 @@
+import {
+  preferYouTubeMp4MediaCapabilities,
+  preferYouTubeMp4MediaElement,
+  preferYouTubeMp4MediaSource,
+} from '~/src/core/site-adapters/youtube/playback-preference';
+
 interface YouTubePlayerWindow extends Window {
+  HTMLMediaElement?: { prototype: HTMLMediaElement };
+  ManagedMediaSource?: typeof MediaSource;
+  MediaSource?: typeof MediaSource;
   ytInitialPlayerResponse?: unknown;
   ytplayer?: {
     bootstrapPlayerResponse?: unknown;
@@ -6,7 +15,14 @@ interface YouTubePlayerWindow extends Window {
   };
 }
 
+interface YouTubePlayerElement extends HTMLElement {
+  getPlayerResponse?: () => unknown;
+}
+
 const BRIDGE_ATTRIBUTE = 'data-open-media-downloader-youtube-player';
+const PUBLISH_INTERVAL_MS = 250;
+const MAX_PUBLISH_ATTEMPTS = 40;
+let publishGeneration = 0;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -23,28 +39,52 @@ function isYouTubeWatchPage(): boolean {
     /^[0-9A-Za-z_-]{11}$/.test(new URLSearchParams(location.search).get('v') ?? '');
 }
 
+function currentVideoId(): string | undefined {
+  const videoId = new URLSearchParams(location.search).get('v') ?? '';
+  return /^[0-9A-Za-z_-]{11}$/.test(videoId) ? videoId : undefined;
+}
+
+function playerElementResponse(): unknown {
+  const player = document.getElementById('movie_player') as YouTubePlayerElement | null;
+  try {
+    return player?.getPlayerResponse?.();
+  } catch {
+    return undefined;
+  }
+}
+
 function currentPlayerResponse(): unknown {
   const pageWindow = window as YouTubePlayerWindow;
   const candidates = [
+    playerElementResponse(),
     pageWindow.ytplayer?.config?.args?.raw_player_response,
     pageWindow.ytplayer?.bootstrapPlayerResponse,
     pageWindow.ytInitialPlayerResponse,
   ];
+  const expectedVideoId = currentVideoId();
+  let fallback: JsonRecord | undefined;
   for (const candidate of candidates) {
-    if (candidate && typeof candidate === 'object') return candidate;
+    let parsed = candidate;
     if (typeof candidate === 'string') {
       try {
-        const parsed: unknown = JSON.parse(candidate);
-        if (parsed && typeof parsed === 'object') return parsed;
+        parsed = JSON.parse(candidate) as unknown;
       } catch {
-        // Try the next player response source.
+        continue;
       }
     }
+    const response = asRecord(parsed);
+    const details = asRecord(response?.videoDetails);
+    if (!response || (expectedVideoId && details?.videoId !== expectedVideoId)) continue;
+    fallback ??= response;
+    const streamingData = asRecord(response.streamingData);
+    if (Array.isArray(streamingData?.adaptiveFormats) && streamingData.adaptiveFormats.length) {
+      return response;
+    }
   }
-  return undefined;
+  return fallback;
 }
 
-function playerSnapshot(value: unknown): JsonRecord | undefined {
+function playerSnapshot(value: unknown): { value: JsonRecord; hasAdaptiveFormats: boolean } | undefined {
   const response = asRecord(value);
   const playability = asRecord(response?.playabilityStatus);
   const details = asRecord(response?.videoDetails);
@@ -54,56 +94,69 @@ function playerSnapshot(value: unknown): JsonRecord | undefined {
     ? streamingData.adaptiveFormats.map(asRecord).filter((format): format is JsonRecord => Boolean(format))
     : [];
   return {
-    playabilityStatus: {
-      status: playability.status,
-      reason: playability.reason,
-    },
-    videoDetails: {
-      videoId: details.videoId,
-      title: details.title,
-      lengthSeconds: details.lengthSeconds,
-      isLiveContent: details.isLiveContent,
-    },
-    streamingData: {
-      adaptiveFormats: adaptiveFormats.map((format) => ({
-        itag: format.itag,
-        mimeType: format.mimeType,
-        bitrate: format.bitrate,
-        averageBitrate: format.averageBitrate,
-        width: format.width,
-        height: format.height,
-        fps: format.fps,
-        initRange: format.initRange,
-        indexRange: format.indexRange,
-        url: format.url,
-        signatureCipher: format.signatureCipher,
-        cipher: format.cipher,
-        drmFamilies: format.drmFamilies,
-        licenseInfos: format.licenseInfos,
-      })),
+    hasAdaptiveFormats: adaptiveFormats.length > 0,
+    value: {
+      playabilityStatus: {
+        status: playability.status,
+        reason: playability.reason,
+      },
+      videoDetails: {
+        videoId: details.videoId,
+        title: details.title,
+        lengthSeconds: details.lengthSeconds,
+        isLiveContent: details.isLiveContent,
+      },
+      streamingData: {
+        adaptiveFormats: adaptiveFormats.map((format) => ({
+          itag: format.itag,
+          mimeType: format.mimeType,
+          bitrate: format.bitrate,
+          averageBitrate: format.averageBitrate,
+          width: format.width,
+          height: format.height,
+          fps: format.fps,
+          initRange: format.initRange,
+          indexRange: format.indexRange,
+          url: format.url,
+          signatureCipher: format.signatureCipher,
+          cipher: format.cipher,
+          drmFamilies: format.drmFamilies,
+          licenseInfos: format.licenseInfos,
+        })),
+      },
     },
   };
 }
 
-function publishPlayerResponse(): void {
-  if (!isYouTubeWatchPage() || !document.documentElement) return;
+function publishPlayerResponse(): boolean {
+  if (!isYouTubeWatchPage() || !document.documentElement) return false;
   const response = playerSnapshot(currentPlayerResponse());
-  if (!response) return;
+  if (!response) return false;
   const script = document.createElement('script');
   script.type = 'application/json';
   script.setAttribute(BRIDGE_ATTRIBUTE, '');
   try {
-    script.textContent = JSON.stringify(response);
+    script.textContent = JSON.stringify(response.value);
   } catch {
-    return;
+    return false;
   }
   document.querySelector(`script[${BRIDGE_ATTRIBUTE}]`)?.remove();
   document.documentElement.append(script);
+  return response.hasAdaptiveFormats;
 }
 
 function publishAfterNavigation(): void {
-  window.setTimeout(publishPlayerResponse, 0);
-  window.setTimeout(publishPlayerResponse, 500);
+  const generation = ++publishGeneration;
+  let attempts = 0;
+  const publish = () => {
+    if (generation !== publishGeneration) return;
+    attempts += 1;
+    const complete = publishPlayerResponse();
+    if (!complete && attempts < MAX_PUBLISH_ATTEMPTS) {
+      window.setTimeout(publish, PUBLISH_INTERVAL_MS);
+    }
+  };
+  publish();
 }
 
 export default defineContentScript({
@@ -111,8 +164,14 @@ export default defineContentScript({
   runAt: 'document_start',
   world: 'MAIN',
   main() {
+    const pageWindow = window as YouTubePlayerWindow;
+    preferYouTubeMp4MediaSource(pageWindow.MediaSource);
+    preferYouTubeMp4MediaSource(pageWindow.ManagedMediaSource);
+    preferYouTubeMp4MediaElement(pageWindow.HTMLMediaElement?.prototype);
+    preferYouTubeMp4MediaCapabilities(pageWindow.navigator.mediaCapabilities);
     publishAfterNavigation();
     document.addEventListener('DOMContentLoaded', publishAfterNavigation);
     window.addEventListener('yt-navigate-finish', publishAfterNavigation);
+    window.addEventListener('yt-player-updated', publishAfterNavigation);
   },
 });

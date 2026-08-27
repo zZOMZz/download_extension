@@ -79,10 +79,13 @@ The YouTube detection adapter is limited to individual watch pages. It reads
 the current non-DRM MP4 track metadata from the page player and waits until
 playback exposes signed `googlevideo.com` video and audio URLs, then hands the
 tracks to the generic DASH pipeline. A YouTube-only main-world bridge keeps the
-metadata current across same-page navigation; request-header rules are scoped
-to the generated downloader tab and Google Video domains. The adapter does not
-implement signature deciphering, DRM bypass, playlist discovery, or background
-account access. If no candidate appears, start playback and reopen the popup.
+metadata current across same-page navigation and asks the YouTube player to
+prefer H.264/AAC MP4 tracks that the current output pipeline can merge. This can
+limit playback to the MP4 qualities YouTube exposes, commonly up to 1080p.
+Request-header rules are scoped to the generated downloader tab and Google
+Video domains. The adapter does not implement signature deciphering, DRM bypass,
+playlist discovery, or background account access. If no candidate appears,
+start playback and reopen the popup.
 
 ## HLS site adapters
 
