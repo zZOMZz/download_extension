@@ -1,6 +1,6 @@
 import { browser } from 'wxt/browser';
 import { classifyMediaResource, isHttpUrl } from '~/src/core/detection/classify-media';
-import { detectionAdapterOwnsResource } from '~/src/core/detection/adapters/registry';
+import { detectionAdapterClaimsResource } from '~/src/core/detection/adapters/registry';
 import {
   clearCandidates,
   findCandidate,
@@ -20,7 +20,10 @@ import {
   removeTaskDiagnosticEvents,
 } from '~/src/background/task-diagnostics-repository';
 import { pageDiscoveryResponseSchema } from '~/src/shared/discovery';
-import { runtimeRequestSchema } from '~/src/shared/media';
+import {
+  runtimeRequestSchema,
+  type AdapterResourceObservation,
+} from '~/src/shared/media';
 import {
   configureSiteRequestAdapterForTab,
   configureSiteRequestAdaptersForManager,
@@ -50,12 +53,16 @@ export default defineBackground(() => {
     (details) => {
       if (details.tabId < 0) return;
 
-      if (details.initiator) {
-        try {
-          if (detectionAdapterOwnsResource(new URL(details.url), new URL(details.initiator))) return;
-        } catch {
-          // Continue with generic detection when either URL is unavailable or invalid.
+      try {
+        if (detectionAdapterClaimsResource(new URL(details.url))) {
+          void browser.tabs.sendMessage(details.tabId, {
+            type: 'adapter:resource-observed',
+            url: details.url,
+          } satisfies AdapterResourceObservation).catch(() => {});
+          return;
         }
+      } catch {
+        // Continue with generic detection when the resource URL is invalid.
       }
 
       const mimeType = responseHeader(details.responseHeaders, 'content-type');

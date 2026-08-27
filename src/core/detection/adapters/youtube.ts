@@ -23,16 +23,33 @@ export function isYouTubeWatchPage(pageUrl: URL): boolean {
   return youtubeVideoId(pageUrl) !== undefined;
 }
 
+export function isYouTubeUiAudioResource(resourceUrl: URL): boolean {
+  return resourceUrl.protocol === 'https:' &&
+    ['youtube.com', 'www.youtube.com', 'm.youtube.com'].includes(resourceUrl.hostname) &&
+    resourceUrl.pathname.startsWith('/s/search/audio/') &&
+    resourceUrl.pathname.endsWith('.mp3');
+}
+
+export function isYouTubeClaimedResource(resourceUrl: URL): boolean {
+  return isGoogleVideoUrl(resourceUrl.href) || isYouTubeUiAudioResource(resourceUrl);
+}
+
 export const youtubeDetectionAdapter: MediaDetectionAdapter = {
   id: 'youtube',
   matches: isYouTubeWatchPage,
+  claimsResource: isYouTubeClaimedResource,
   ownsResource(resourceUrl, pageUrl) {
-    return isYouTubeWatchPage(pageUrl) && isGoogleVideoUrl(resourceUrl.href);
+    return isYouTubeWatchPage(pageUrl) && isYouTubeClaimedResource(resourceUrl);
   },
-  detect(document, pageUrl): CandidateObservation[] {
+  detect(document, pageUrl, context): CandidateObservation[] {
     const videoId = youtubeVideoId(pageUrl);
     if (!videoId) return [];
-    const player = parseYouTubePlayerResponseDocument(document, { expectedVideoId: videoId });
+    const player = parseYouTubePlayerResponseDocument(document, {
+      expectedVideoId: videoId,
+      ...(context?.observedResourceUrls
+        ? { observedMediaUrls: context.observedResourceUrls }
+        : {}),
+    });
     if (!player?.dash) return [];
     return [{
       kind: 'dash',

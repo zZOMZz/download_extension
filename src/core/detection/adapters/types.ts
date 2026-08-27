@@ -1,8 +1,17 @@
 import type { CandidateObservation } from '../../../shared/media';
 
+export interface MediaDetectionContext {
+  observedResourceUrls?: readonly string[];
+}
+
 export interface MediaDetectionAdapter {
   id: string;
   matches(pageUrl: URL): boolean;
+  claimsResource?(resourceUrl: URL): boolean;
   ownsResource?(resourceUrl: URL, pageUrl: URL): boolean;
-  detect(document: Document, pageUrl: URL): CandidateObservation[];
+  detect(
+    document: Document,
+    pageUrl: URL,
+    context?: MediaDetectionContext,
+  ): CandidateObservation[];
 }

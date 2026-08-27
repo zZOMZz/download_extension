@@ -73,6 +73,13 @@ export const candidateObservationSchema = mediaCandidateSchema.omit({
 
 export type CandidateObservation = z.infer<typeof candidateObservationSchema>;
 
+export const adapterResourceObservationSchema = z.object({
+  type: z.literal('adapter:resource-observed'),
+  url: z.string().url(),
+});
+
+export type AdapterResourceObservation = z.infer<typeof adapterResourceObservationSchema>;
+
 export const runtimeRequestSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('candidate:observe'),

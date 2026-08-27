@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   isYouTubeWatchPage,
+  isYouTubeUiAudioResource,
   youtubeDetectionAdapter,
   youtubeVideoId,
 } from '../src/core/detection/adapters/youtube';
-import { detectionAdapterOwnsResource } from '../src/core/detection/adapters/registry';
+import {
+  detectionAdapterClaimsResource,
+  detectionAdapterOwnsResource,
+} from '../src/core/detection/adapters/registry';
 import {
   isGoogleVideoUrl,
   parseYouTubePlayerResponse,
@@ -164,8 +168,9 @@ describe('YouTube DASH detection adapter', () => {
   it('emits one DASH candidate after both MP4 tracks have been observed', () => {
     const pageUrl = new URL('https://www.youtube.com/watch?v=GwUwyWGHmGY');
     expect(youtubeDetectionAdapter.detect(
-      fakeDocument(playerScript(), [observedVideo, observedAudio]),
+      fakeDocument(playerScript()),
       pageUrl,
+      { observedResourceUrls: [observedVideo, observedAudio] },
     )).toEqual([expect.objectContaining({
       kind: 'dash',
       source: 'dom',
@@ -211,8 +216,25 @@ describe('YouTube DASH detection adapter', () => {
     expect(isYouTubeWatchPage(new URL('https://www.youtube.com/results?v=GwUwyWGHmGY'))).toBe(false);
     expect(isGoogleVideoUrl(observedVideo)).toBe(true);
     expect(isGoogleVideoUrl('https://googlevideo.com.evil.example/videoplayback?itag=137')).toBe(false);
+    expect(isYouTubeUiAudioResource(
+      new URL('https://www.youtube.com/s/search/audio/no_input.mp3'),
+    )).toBe(true);
+    expect(isYouTubeUiAudioResource(
+      new URL('https://www.youtube.com/watch/audio/video.mp3'),
+    )).toBe(false);
+    expect(detectionAdapterClaimsResource(new URL(observedVideo))).toBe(true);
+    expect(detectionAdapterClaimsResource(
+      new URL('https://www.youtube.com/s/search/audio/open.mp3'),
+    )).toBe(true);
+    expect(detectionAdapterClaimsResource(
+      new URL('https://youtube.com.evil.example/s/search/audio/open.mp3'),
+    )).toBe(false);
     expect(detectionAdapterOwnsResource(
       new URL(observedVideo),
+      new URL('https://www.youtube.com/watch?v=GwUwyWGHmGY'),
+    )).toBe(true);
+    expect(detectionAdapterOwnsResource(
+      new URL('https://www.youtube.com/s/search/audio/failure.mp3'),
       new URL('https://www.youtube.com/watch?v=GwUwyWGHmGY'),
     )).toBe(true);
     expect(detectionAdapterOwnsResource(

@@ -2,14 +2,38 @@ import { browser } from 'wxt/browser';
 import { classifyMediaResource } from '~/src/core/detection/classify-media';
 import {
   detectAdapterMedia,
+  detectionAdapterClaimsResource,
   detectionAdapterOwnsResource,
 } from '~/src/core/detection/adapters/registry';
 import { discoverMediaItems } from '~/src/core/discovery/registry';
 import { pageDiscoveryRequestSchema } from '~/src/shared/discovery';
-import type { CandidateObservation } from '~/src/shared/media';
+import {
+  adapterResourceObservationSchema,
+  type CandidateObservation,
+} from '~/src/shared/media';
 
 const observed = new Set<string>();
 const adapterDetectedPages = new Set<string>();
+const adapterObservedResources = new Set<string>();
+const MAX_ADAPTER_RESOURCE_URLS = 256;
+let adapterResourcePage = location.href;
+
+function refreshAdapterResourcePage(): void {
+  if (adapterResourcePage === location.href) return;
+  adapterResourcePage = location.href;
+  adapterObservedResources.clear();
+}
+
+function rememberAdapterResource(rawUrl: string): void {
+  refreshAdapterResourcePage();
+  adapterObservedResources.delete(rawUrl);
+  adapterObservedResources.add(rawUrl);
+  while (adapterObservedResources.size > MAX_ADAPTER_RESOURCE_URLS) {
+    const oldest = adapterObservedResources.values().next().value as string | undefined;
+    if (oldest === undefined) break;
+    adapterObservedResources.delete(oldest);
+  }
+}
 
 function reportObservation(candidate: CandidateObservation): void {
   const identity = `${candidate.kind}\u0000${candidate.url}`;
@@ -25,7 +49,13 @@ function report(rawUrl: string, source: CandidateObservation['source'], mimeType
   if (!url) return;
 
   try {
-    if (detectionAdapterOwnsResource(new URL(url), new URL(location.href))) return;
+    const resourceUrl = new URL(url);
+    if (detectionAdapterClaimsResource(resourceUrl)) {
+      if (detectionAdapterOwnsResource(resourceUrl, new URL(location.href))) {
+        rememberAdapterResource(url);
+      }
+      return;
+    }
   } catch {
     // Invalid resources are ignored by the generic classifier below as well.
   }
@@ -45,6 +75,7 @@ function report(rawUrl: string, source: CandidateObservation['source'], mimeType
 }
 
 function scanDetectionAdapters(): void {
+  refreshAdapterResourcePage();
   let pageUrl: URL;
   try {
     pageUrl = new URL(location.href);
@@ -52,7 +83,9 @@ function scanDetectionAdapters(): void {
     return;
   }
   if (adapterDetectedPages.has(pageUrl.href)) return;
-  const candidates = detectAdapterMedia(document, pageUrl);
+  const candidates = detectAdapterMedia(document, pageUrl, {
+    observedResourceUrls: [...adapterObservedResources],
+  });
   if (candidates.length) adapterDetectedPages.add(pageUrl.href);
   for (const candidate of candidates) reportObservation(candidate);
 }
@@ -78,6 +111,12 @@ export default defineContentScript({
   runAt: 'document_start',
   main() {
     browser.runtime.onMessage.addListener(async (message: unknown) => {
+      const resourceObservation = adapterResourceObservationSchema.safeParse(message);
+      if (resourceObservation.success) {
+        rememberAdapterResource(resourceObservation.data.url);
+        scanDetectionAdapters();
+        return undefined;
+      }
       const parsed = pageDiscoveryRequestSchema.safeParse(message);
       if (!parsed.success) return undefined;
 
