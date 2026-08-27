@@ -39,6 +39,7 @@ pnpm build
 - Move exhausted transient failures into a persistent cooldown state, release their pool slot, refresh signed media URLs, and retry automatically.
 - Persist segment-boundary checkpoints and reconcile them with the committed partial file after failures or manager restarts.
 - Resume DASH video and audio tracks independently from committed fragment boundaries before losslessly merging them into MP4.
+- Refresh expired DASH CDN URLs after 401/403 responses, verify track identity, and continue from the committed fragment boundary.
 - Remember the selected output directory in IndexedDB, restore it when permission remains granted, and offer one-click reconnection otherwise.
 - Adapt request concurrency per host after repeated 429, 5xx, timeout, or transport failures, including a short circuit-breaker cooldown.
 - Keep bounded per-task diagnostics with structured failure categories and exportable, query-string-redacted JSON reports.
@@ -119,5 +120,11 @@ initialization boundary and completed fragment offsets, so a retry skips bytes
 that were already committed. The two partials are deleted only after the merged
 MP4 passes structural validation; legacy HLS version 1 checkpoints remain
 readable without migration.
+
+If every URL for a DASH resource returns 401/403, the executor asks the source
+discovery adapter for fresh media metadata. Host and signed-query changes are
+accepted only when track IDs, codecs, resource paths, byte ranges, and fragment
+counts still match the checkpoint. An incompatible refresh keeps both partials
+and requires an explicit restart instead of combining different tracks.
 
 Only download content you own or have permission to save.

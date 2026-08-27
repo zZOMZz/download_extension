@@ -31,6 +31,8 @@ export const taskDiagnosticEventCodeSchema = z.enum([
   'manager-interrupted',
   'resolve-started',
   'source-resolved',
+  'source-refresh-started',
+  'source-refreshed',
   'manifest-loaded',
   'audio-rendition-loaded',
   'output-opened',

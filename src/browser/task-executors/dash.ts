@@ -16,6 +16,7 @@ import {
   dashTrackFingerprint,
   reconcileDashTrackFile,
 } from '../../core/dash/resume';
+import { isExpiredDashResourceError } from '../../core/dash/source-refresh';
 import { safeFilename } from '../../core/format';
 import { checkpointMatchesDirectory } from '../../core/task-checkpoint';
 import type {
@@ -190,42 +191,86 @@ export const dashTaskExecutor: ProtocolTaskExecutor = {
   async execute(context) {
     if (context.media.kind !== 'dash') throw new Error('The DASH task executor received another protocol.');
     let task = context.task;
-    const source = context.media.dash ?? parseDashMediaSource(
-      await context.loadText(context.media.url, context.signal),
-      context.media.url,
-    );
+    let resolvedMedia = context.media;
+    let sourceRefreshAttempt = 0;
+    const maxSourceRefreshes = Math.min(2, context.networkSettings.taskRecoveryAttempts);
     const retry = (event: HlsRequestRetryEvent) =>
       context.recordRequestRetry(event, event.resourceKind, event.resourceUrl, event.segment);
-    const plan = await prepareDashDownload(source, {
-      signal: context.signal,
-      networkPolicy: context.networkPolicy,
-      onRequestRetry: retry,
-    });
+    const prepare = async () => {
+      const source = resolvedMedia.dash ?? parseDashMediaSource(
+        await context.loadText(resolvedMedia.url, context.signal),
+        resolvedMedia.url,
+      );
+      return prepareDashDownload(source, {
+        signal: context.signal,
+        networkPolicy: context.networkPolicy,
+        onRequestRetry: retry,
+      });
+    };
+    const refreshExpiredSource = async (cause: unknown) => {
+      if (
+        !isExpiredDashResourceError(cause) ||
+        sourceRefreshAttempt >= maxSourceRefreshes
+      ) throw cause;
+      sourceRefreshAttempt += 1;
+      await context.recordTaskEvent('source-refresh-started', 'warning', {
+        attempt: sourceRefreshAttempt,
+        maxAttempts: maxSourceRefreshes,
+      });
+      const refreshed = await context.refreshMedia();
+      if (refreshed.kind !== 'dash') {
+        throw new Error(context.t('dashCheckpointProtocolMismatch'));
+      }
+      resolvedMedia = refreshed;
+      await context.recordTaskEvent('source-refreshed', 'info', {
+        ...diagnosticResource(refreshed.url),
+        attempt: sourceRefreshAttempt,
+        maxAttempts: maxSourceRefreshes,
+      });
+    };
+    const prepareWithRefresh = async (): Promise<DashDownloadPlan> => {
+      while (true) {
+        try {
+          return await prepare();
+        } catch (cause) {
+          await refreshExpiredSource(cause);
+        }
+      }
+    };
+    let plan = await prepareWithRefresh();
     await context.recordTaskEvent('manifest-loaded', 'info', {
-      ...diagnosticResource(context.media.url),
+      ...diagnosticResource(resolvedMedia.url),
       totalSegments: plan.totalSegments,
     });
     const finalFilename = outputFilename(task);
     const resumeEnabled = Boolean(task.checkpoint) || context.networkSettings.resumePartialDownloads;
     if (!resumeEnabled) {
-      const destination = await openDirectoryOutputWriter(context.directory, finalFilename);
-      const writer = new SeparateTrackFmp4Writer(
-        destination,
-        plan.video.segments.length,
-        plan.audio.segments.length,
-      );
-      task = await context.persistTask(resetTaskState(task, 'downloading'));
-      await context.recordTaskEvent('output-opened', 'info', {
-        directoryName: context.directory.name,
-        filename: finalFilename,
-      });
-      await context.recordTaskEvent('download-started', 'info', { totalSegments: plan.totalSegments });
-      await downloadDashPlan(plan, writer, {
-        signal: context.signal,
-        networkPolicy: context.networkPolicy,
-        onProgress: context.onProgress,
-        onRequestRetry: retry,
-      });
+      while (true) {
+        const destination = await openDirectoryOutputWriter(context.directory, finalFilename);
+        const writer = new SeparateTrackFmp4Writer(
+          destination,
+          plan.video.segments.length,
+          plan.audio.segments.length,
+        );
+        task = await context.persistTask(resetTaskState(task, 'downloading'));
+        await context.recordTaskEvent('output-opened', 'info', {
+          directoryName: context.directory.name,
+          filename: finalFilename,
+        });
+        await context.recordTaskEvent('download-started', 'info', { totalSegments: plan.totalSegments });
+        try {
+          await downloadDashPlan(plan, writer, {
+            signal: context.signal,
+            networkPolicy: context.networkPolicy,
+            onProgress: context.onProgress,
+            onRequestRetry: retry,
+          });
+          break;
+        } catch (cause) {
+          await refreshExpiredSource(cause);
+          plan = await prepareWithRefresh();
+        }
+      }
       return {
         finalFilename,
         validationOptions: { format: 'mp4', requireVideo: true },
@@ -301,66 +346,83 @@ export const dashTaskExecutor: ProtocolTaskExecutor = {
       totalSegments: checkpoint.totalSegments,
     });
 
-    const downloadTrack = async (kind: DashTrackKind, track: ResolvedDashTrack) => {
-      const saved = checkpoint.tracks[kind];
-      if (saved.initializationBytes > 0 && saved.completedSegments === saved.totalSegments) return;
-      const writer = await openResumableDirectoryOutputWriter(
-        context.directory,
-        saved.partialFilename,
-        saved.bytesWritten,
-      );
-      await context.recordTaskEvent('output-opened', 'info', {
-        directoryName: context.directory.name,
-        filename: saved.partialFilename,
-        bytesWritten: saved.bytesWritten,
-      });
-      await downloadDashTrack(track, writer, {
-        signal: context.signal,
-        networkPolicy: context.networkPolicy,
-        initializationWritten: saved.initializationBytes > 0,
-        startSegmentIndex: saved.completedSegments,
-        initialBytesWritten: saved.bytesWritten,
-        onProgress: (progress) => context.onProgress(combinedProgress(checkpoint, kind, progress)),
-        onRequestRetry: (event) => context.recordRequestRetry(
-          event,
-          event.resourceKind,
-          event.resourceUrl,
-          event.segment === undefined
-            ? undefined
-            : event.segment + (kind === 'audio' ? checkpoint.tracks.video.totalSegments : 0),
-        ),
-        onInitializationComplete: async (bytesWritten) => {
-          checkpoint = replaceTrackCheckpoint(checkpoint, kind, {
-            ...checkpoint.tracks[kind],
-            initializationBytes: bytesWritten,
-            bytesWritten,
+    const downloadTrack = async (kind: DashTrackKind) => {
+      while (true) {
+        const saved = checkpoint.tracks[kind];
+        if (saved.initializationBytes > 0 && saved.completedSegments === saved.totalSegments) return;
+        const writer = await openResumableDirectoryOutputWriter(
+          context.directory,
+          saved.partialFilename,
+          saved.bytesWritten,
+        );
+        await context.recordTaskEvent('output-opened', 'info', {
+          directoryName: context.directory.name,
+          filename: saved.partialFilename,
+          bytesWritten: saved.bytesWritten,
+        });
+        try {
+          await downloadDashTrack(plan[kind], writer, {
+            signal: context.signal,
+            networkPolicy: context.networkPolicy,
+            initializationWritten: saved.initializationBytes > 0,
+            startSegmentIndex: saved.completedSegments,
+            initialBytesWritten: saved.bytesWritten,
+            onProgress: (progress) => context.onProgress(combinedProgress(checkpoint, kind, progress)),
+            onRequestRetry: (event) => context.recordRequestRetry(
+              event,
+              event.resourceKind,
+              event.resourceUrl,
+              event.segment === undefined
+                ? undefined
+                : event.segment + (kind === 'audio' ? checkpoint.tracks.video.totalSegments : 0),
+            ),
+            onInitializationComplete: async (bytesWritten) => {
+              checkpoint = replaceTrackCheckpoint(checkpoint, kind, {
+                ...checkpoint.tracks[kind],
+                initializationBytes: bytesWritten,
+                bytesWritten,
+              });
+              task = await context.persistTask({ ...task, checkpoint });
+            },
+            onSegmentComplete: async (progress, trackSegmentIndex) => {
+              const segmentEndOffsets = checkpoint.tracks[kind].segmentEndOffsets.slice(0, trackSegmentIndex);
+              segmentEndOffsets.push(progress.bytesWritten);
+              checkpoint = replaceTrackCheckpoint(checkpoint, kind, {
+                ...checkpoint.tracks[kind],
+                completedSegments: progress.completedSegments,
+                bytesWritten: progress.bytesWritten,
+                segmentEndOffsets,
+              });
+              const aggregateProgress = combinedProgress(checkpoint, kind, progress);
+              task = await context.persistTask({ ...task, progress: aggregateProgress, checkpoint });
+              if (shouldRecordCheckpoint(checkpoint.completedSegments, checkpoint.totalSegments)) {
+                void context.recordTaskEvent('checkpoint-saved', 'info', {
+                  completedSegments: checkpoint.completedSegments,
+                  totalSegments: checkpoint.totalSegments,
+                  bytesWritten: checkpoint.bytesWritten,
+                });
+              }
+            },
           });
-          task = await context.persistTask({ ...task, checkpoint });
-        },
-        onSegmentComplete: async (progress, trackSegmentIndex) => {
-          const segmentEndOffsets = checkpoint.tracks[kind].segmentEndOffsets.slice(0, trackSegmentIndex);
-          segmentEndOffsets.push(progress.bytesWritten);
-          checkpoint = replaceTrackCheckpoint(checkpoint, kind, {
-            ...checkpoint.tracks[kind],
-            completedSegments: progress.completedSegments,
-            bytesWritten: progress.bytesWritten,
-            segmentEndOffsets,
-          });
-          const aggregateProgress = combinedProgress(checkpoint, kind, progress);
-          task = await context.persistTask({ ...task, progress: aggregateProgress, checkpoint });
-          if (shouldRecordCheckpoint(checkpoint.completedSegments, checkpoint.totalSegments)) {
-            void context.recordTaskEvent('checkpoint-saved', 'info', {
-              completedSegments: checkpoint.completedSegments,
-              totalSegments: checkpoint.totalSegments,
-              bytesWritten: checkpoint.bytesWritten,
-            });
-          }
-        },
-      });
+          return;
+        } catch (cause) {
+          await refreshExpiredSource(cause);
+          const refreshedPlan = await prepareWithRefresh();
+          assertCompatibleCheckpoint(
+            context,
+            checkpoint,
+            refreshedPlan,
+            finalFilename,
+            videoPartialFilename,
+            audioPartialFilename,
+          );
+          plan = refreshedPlan;
+        }
+      }
     };
 
-    await downloadTrack('video', plan.video);
-    await downloadTrack('audio', plan.audio);
+    await downloadTrack('video');
+    await downloadTrack('audio');
     if (checkpoint.completedSegments !== checkpoint.totalSegments) {
       throw new Error(context.t('partialClosedEarly'));
     }

@@ -25,6 +25,7 @@ export interface TaskExecutorContext {
   networkPolicy: HlsNetworkPolicy;
   networkSettings: NetworkSettings;
   loadText(url: string, signal?: AbortSignal): Promise<string>;
+  refreshMedia(): Promise<ResolvedDiscoveredMedia>;
   persistTask(task: DownloadTask): Promise<DownloadTask>;
   onProgress(progress: DownloadTaskProgress): void;
   recordTaskEvent: RecordTaskEvent;

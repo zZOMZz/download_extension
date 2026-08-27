@@ -91,23 +91,26 @@ beforeAll(async () => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('DASH task executor', () => {
-  it('checkpoints both tracks, finalizes a playable MP4, and removes partials after validation', async () => {
+  it('refreshes an expired URL, resumes both tracks, and removes partials after validation', async () => {
     const resources = new Map<string, Uint8Array>([
-      ['https://cdn.example/video-init', video.init],
-      ['https://cdn.example/video-1', video.data],
-      ['https://cdn.example/audio-init', audio.init],
-      ['https://cdn.example/audio-1', audio.data],
+      ['https://cdn.example/video-init?token=old', video.init],
+      ['https://cdn.example/video-1?token=old', video.data],
+      ['https://cdn.example/audio-init?token=old', audio.init],
+      ['https://cdn.example/audio-1?token=fresh', audio.data],
     ]);
     const requests: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       requests.push(url);
+      if (url === 'https://cdn.example/audio-1?token=old') {
+        return new Response(null, { status: 403 });
+      }
       const bytes = resources.get(url);
       return bytes
         ? new Response(bytes.slice().buffer as ArrayBuffer, { status: 200 })
         : new Response(null, { status: 404 });
     }));
-    const dash: DashMediaSource = {
+    const dash = (token: string): DashMediaSource => ({
       type: 'static',
       hasContentProtection: false,
       tracks: [
@@ -115,18 +118,18 @@ describe('DASH task executor', () => {
           id: 'video',
           kind: 'video',
           codecs: 'avc1.64001f',
-          initialization: { url: 'https://cdn.example/video-init' },
-          segments: [{ url: 'https://cdn.example/video-1' }],
+          initialization: { url: `https://cdn.example/video-init?token=${token}` },
+          segments: [{ url: `https://cdn.example/video-1?token=${token}` }],
         },
         {
           id: 'audio',
           kind: 'audio',
           codecs: 'mp4a.40.2',
-          initialization: { url: 'https://cdn.example/audio-init' },
-          segments: [{ url: 'https://cdn.example/audio-1' }],
+          initialization: { url: `https://cdn.example/audio-init?token=${token}` },
+          segments: [{ url: `https://cdn.example/audio-1?token=${token}` }],
         },
       ],
-    };
+    });
     let task: DownloadTask = {
       id: 'dash-task',
       source: {
@@ -142,6 +145,8 @@ describe('DASH task executor', () => {
       updatedAt: 1,
     };
     const checkpoints: DownloadTask[] = [];
+    const events: string[] = [];
+    let refreshCalls = 0;
     const { directory, files } = memoryDirectory();
     const result = await dashTaskExecutor.execute({
       task,
@@ -149,7 +154,7 @@ describe('DASH task executor', () => {
         kind: 'dash',
         url: 'https://www.bilibili.com/video/BV1test',
         title: 'Episode 1',
-        dash,
+        dash: dash('old'),
       },
       directory,
       directoryHandleId: 'directory-1',
@@ -157,18 +162,38 @@ describe('DASH task executor', () => {
       networkPolicy: { maxAttempts: 1 },
       networkSettings: NETWORK_PRESETS.resilient,
       loadText: async () => { throw new Error('Embedded DASH metadata should not load an MPD.'); },
+      refreshMedia: async () => {
+        refreshCalls += 1;
+        return {
+          kind: 'dash',
+          url: 'https://www.bilibili.com/video/BV1test',
+          title: 'Episode 1',
+          dash: dash('fresh'),
+        };
+      },
       persistTask: async (next) => {
         task = next;
         checkpoints.push(next);
         return next;
       },
       onProgress: () => {},
-      recordTaskEvent: async () => {},
+      recordTaskEvent: async (code) => { events.push(code); },
       recordRequestRetry: () => {},
       t: createTranslator('en'),
     });
 
-    expect(requests).toEqual([...resources.keys()]);
+    expect(requests).toEqual([
+      'https://cdn.example/video-init?token=old',
+      'https://cdn.example/video-1?token=old',
+      'https://cdn.example/audio-init?token=old',
+      'https://cdn.example/audio-1?token=old',
+      'https://cdn.example/audio-1?token=fresh',
+    ]);
+    expect(refreshCalls).toBe(1);
+    expect(events).toEqual(expect.arrayContaining([
+      'source-refresh-started',
+      'source-refreshed',
+    ]));
     expect(checkpoints.some(({ checkpoint }) =>
       checkpoint?.version === 2 &&
       checkpoint.tracks.video.completedSegments === 1 &&

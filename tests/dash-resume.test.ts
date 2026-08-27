@@ -40,6 +40,9 @@ describe('DASH resume metadata', () => {
       resource.url = resource.url.replace('video.example', 'backup.example');
     });
     expect(dashPlanFingerprint(plan('old'))).toBe(dashPlanFingerprint(refreshed));
+
+    refreshed.video.segments[0]!.byteRange = { offset: 101, length: 20 };
+    expect(dashPlanFingerprint(plan('old'))).not.toBe(dashPlanFingerprint(refreshed));
   });
 
   it('rolls a track back to its last complete fragment boundary', () => {

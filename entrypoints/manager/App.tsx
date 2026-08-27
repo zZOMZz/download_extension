@@ -120,6 +120,8 @@ const DIAGNOSTIC_EVENT_LABEL_KEYS: Record<TaskDiagnosticEventCode, MessageKey> =
   'manager-interrupted': 'eventManagerInterrupted',
   'resolve-started': 'eventResolveStarted',
   'source-resolved': 'eventSourceResolved',
+  'source-refresh-started': 'eventSourceRefreshStarted',
+  'source-refreshed': 'eventSourceRefreshed',
   'manifest-loaded': 'eventManifestLoaded',
   'audio-rendition-loaded': 'eventAudioRenditionLoaded',
   'output-opened': 'eventOutputOpened',
@@ -538,6 +540,7 @@ export function App() {
         networkPolicy,
         networkSettings,
         loadText,
+        refreshMedia: () => resolveDiscoveredMedia(task.source, { fetchText: loadText, signal }),
         persistTask: async (next) => {
           task = await persistTask(next);
           return task;
