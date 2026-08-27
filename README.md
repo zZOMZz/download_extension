@@ -45,6 +45,15 @@ pnpm build
 - Refuse DRM-like HLS encryption methods and unsupported live playlists.
 - Refuse DRM-protected, live, and multi-period DASH manifests instead of producing partial output.
 
+## Protocol task executors
+
+The manager owns queue scheduling, task recovery, diagnostics, and final output
+validation. Protocol-specific download and checkpoint behavior lives behind the
+executor registry in `src/browser/task-executors/`. An executor must claim one
+media kind, while site-specific detection, discovery, and request compatibility
+remain in their adapter layers. The registry rejects duplicate claims so adding
+a protocol cannot silently replace an existing implementation.
+
 ## DASH and detection adapters
 
 The DASH protocol layer lives in `src/core/protocols/dash.ts`, while byte-range

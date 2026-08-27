@@ -11,9 +11,6 @@ import {
   scanTabForMedia,
 } from '~/src/browser/runtime-client';
 import {
-  openDirectoryOutputWriter,
-  openResumableDirectoryOutputWriter,
-  readDirectoryFile,
   removeDirectoryFile,
   type WritableDirectoryHandle,
 } from '~/src/browser/directory-output-writer';
@@ -31,31 +28,18 @@ import {
   setOutputFormat as persistOutputFormat,
   setTaskConcurrency as persistTaskConcurrency,
 } from '~/src/browser/settings';
-import { createHlsOutputWriter } from '~/src/browser/hls-output-writer';
 import { commitValidatedDirectoryOutput } from '~/src/browser/validated-output';
+import { findTaskExecutor } from '~/src/browser/task-executors/registry';
 import { buildTaskDiagnosticReport } from '~/src/core/diagnostics/task-report';
 import { resolveDiscoveredMedia } from '~/src/core/discovery/registry';
 import { formatByteRate, formatBytes, formatDuration, safeFilename } from '~/src/core/format';
 import {
-  downloadHlsPlaylist,
   fetchTextResource,
   isRecoverableNetworkError,
-  validateHlsDownload,
   type HlsNetworkPolicy,
   type HlsDownloadProgress,
   type NetworkRetryEvent,
 } from '~/src/core/hls/download-hls';
-import { inspectHlsUrl, type InspectedHls } from '~/src/core/hls/inspect-hls';
-import {
-  combinedHlsMediaPlaylist,
-  hlsPlaylistUsesFmp4,
-} from '~/src/core/hls/media-bundle';
-import { createHlsOutputPlan, type HlsOutputPlan } from '~/src/core/hls/output-plan';
-import {
-  checkpointMatchesDirectory,
-  hlsPlaylistFingerprint,
-  reconcileCheckpointFile,
-} from '~/src/core/hls/resume';
 import {
   HostHealthController,
   type HostHealthSnapshot,
@@ -64,10 +48,10 @@ import {
 import { OutputValidationError } from '~/src/core/media/output-validator';
 import { runTaskPool } from '~/src/core/task-pool';
 import { classifyTaskError } from '~/src/core/task-error';
+import { resetTaskState } from '~/src/core/task-state';
 import { createTranslator, LANGUAGE_OPTIONS, type MessageKey, type Translator } from '~/src/shared/i18n';
 import {
   DOWNLOAD_TASKS_STORAGE_KEY,
-  type DownloadCheckpoint,
   type DownloadTask,
   type DownloadTaskProgress,
   type DownloadTaskStatus,
@@ -158,11 +142,6 @@ function progressValue(progress: NonNullable<DownloadTask['progress']>): number 
   return Math.min(progress.totalSegments, progress.completedSegments + Math.min(1, fraction));
 }
 
-function shouldRecordCheckpoint(completedSegments: number, totalSegments: number): boolean {
-  const interval = Math.max(1, Math.ceil(totalSegments / 20));
-  return completedSegments === 1 || completedSegments === totalSegments || completedSegments % interval === 0;
-}
-
 function TaskProgress({ progress, t }: {
   progress: NonNullable<DownloadTask['progress']>;
   t: Translator;
@@ -242,26 +221,6 @@ function diagnosticEventMetadata(event: TaskDiagnosticEvent, t: Translator): str
   return details;
 }
 
-interface HlsOutputDetails extends HlsOutputPlan {
-  filename: string;
-}
-
-function outputDetails(
-  task: DownloadTask,
-  hls: InspectedHls,
-): HlsOutputDetails {
-  const plan = createHlsOutputPlan(hls, task.outputFormat);
-  const title = [task.source.seriesTitle, task.source.title].filter(Boolean).join(' - ');
-  return {
-    ...plan,
-    filename: `${safeFilename(title || task.source.title)}.${plan.extension}`,
-  };
-}
-
-function partialFilename(filename: string): string {
-  return `${filename.replace(/\.[^.]+$/, '')}.part.ts`;
-}
-
 function configuredNetworkPolicy(
   settings: NetworkSettings,
   requestCoordinator?: NetworkRequestCoordinator,
@@ -299,57 +258,6 @@ async function waitUntil(timestamp: number, signal: AbortSignal): Promise<void> 
     };
     signal.addEventListener('abort', onAbort, { once: true });
   });
-}
-
-async function finalizePartialOutput(
-  directory: WritableDirectoryHandle,
-  checkpoint: DownloadCheckpoint,
-  details: HlsOutputDetails,
-  signal: AbortSignal,
-  onProgress: (progress: HlsDownloadProgress) => void,
-  t: Translator,
-): Promise<void> {
-  const partial = await readDirectoryFile(directory, checkpoint.partialFilename);
-  if (!partial || partial.size < checkpoint.bytesWritten) {
-    throw new Error(t('partialMissingOrShort'));
-  }
-  const destination = await openDirectoryOutputWriter(directory, checkpoint.finalFilename);
-  const writer = createHlsOutputWriter(destination, details);
-  let start = 0;
-  try {
-    for (const [index, end] of checkpoint.segmentEndOffsets.entries()) {
-      if (signal.aborted) throw signal.reason ?? new DOMException('The task was cancelled.', 'AbortError');
-      const bytes = new Uint8Array(await partial.slice(start, end).arrayBuffer());
-      await writer.write(bytes);
-      start = end;
-      onProgress({
-        completedSegments: checkpoint.totalSegments,
-        totalSegments: checkpoint.totalSegments,
-        bytesWritten: checkpoint.bytesWritten,
-        networkBytesReceived: 0,
-        phase: 'finalizing',
-        currentSegment: index + 1,
-      });
-    }
-    await writer.close();
-  } catch (cause) {
-    await writer.abort(cause);
-    throw cause;
-  }
-}
-
-function resetTaskState(
-  task: DownloadTask,
-  status: DownloadTaskStatus,
-  error?: string,
-): DownloadTask {
-  const next: DownloadTask = { ...task, status, updatedAt: Date.now() };
-  delete next.error;
-  delete next.failure;
-  delete next.progress;
-  if (status !== 'waiting') delete next.nextRetryAt;
-  if (error) next.error = error;
-  return next;
 }
 
 export function App() {
@@ -617,190 +525,39 @@ export function App() {
       await recordTaskEvent(task.id, 'source-resolved', 'info', {
         ...diagnosticResource(media.url),
       });
-      if (media.kind !== 'hls') throw new Error(t('hlsBatchOnly'));
-      const hls = await inspectHlsUrl(media.url, loadText, signal);
-      const downloadPlaylist = combinedHlsMediaPlaylist(hls);
-      await recordTaskEvent(task.id, 'manifest-loaded', 'info', {
-        ...diagnosticResource(hls.selectedVariant?.uri ?? media.url),
-        totalSegments: downloadPlaylist.segments.length,
-      });
-      if (hls.audioMedia) {
-        await recordTaskEvent(task.id, 'audio-rendition-loaded', 'info', {
-          ...(hls.selectedAudioRendition?.uri
-            ? diagnosticResource(hls.selectedAudioRendition.uri)
-            : {}),
-          totalSegments: hls.audioMedia.segments.length,
-          ...(hls.selectedAudioRendition?.name
-            ? { message: hls.selectedAudioRendition.name }
-            : {}),
-        });
-      }
-      const problems = [
-        ...validateHlsDownload(hls.media),
-        ...(hls.audioMedia ? validateHlsDownload(hls.audioMedia) : []),
-      ];
-      if (hls.audioMedia && task.outputFormat !== 'mp4') {
-        problems.push(t('separateAudioRequiresMp4'));
-      }
-      if (
-        hls.audioMedia &&
-        hlsPlaylistUsesFmp4(hls.media) !== hlsPlaylistUsesFmp4(hls.audioMedia)
-      ) problems.push(t('mixedSeparateTrackContainers'));
-      if (problems.length) throw new Error(problems.join(' '));
       if (!directory) throw new Error(t('chooseDirectoryBeforeQueue'));
-
-      const details = outputDetails(task, hls);
-      let partialOutputToRemove: string | null = null;
-      const resumeEnabled = Boolean(task.checkpoint) || (networkSettings.resumePartialDownloads && details.resumableTs);
-      if (resumeEnabled) {
-        if (!details.resumableTs) {
-          throw new Error(t('refreshedStreamIncompatible'));
-        }
-        const fingerprint = hlsPlaylistFingerprint(downloadPlaylist);
-        const expectedPartialFilename = partialFilename(details.filename);
-        let checkpoint = task.checkpoint;
-        if (checkpoint && !checkpointMatchesDirectory(checkpoint, {
-          name: directory.name,
-          ...(directoryHandleId ? { handleId: directoryHandleId } : {}),
-        })) {
-          throw new Error(t('chooseOriginalFolderResume', { name: checkpoint.directoryName }));
-        }
-        if (checkpoint && (
-          checkpoint.playlistFingerprint !== fingerprint ||
-          checkpoint.partialFilename !== expectedPartialFilename ||
-          checkpoint.finalFilename !== details.filename ||
-          checkpoint.totalSegments !== downloadPlaylist.segments.length
-        )) {
-          throw new Error(t('refreshedPlaylistMismatch'));
-        }
-
-        const partial = await readDirectoryFile(directory, expectedPartialFilename);
-        if (checkpoint && !partial) {
-          throw new Error(t('savedPartialNotFound', { name: checkpoint.partialFilename }));
-        }
-        const reconciled = checkpoint
-          ? reconcileCheckpointFile(checkpoint, partial?.size ?? 0)
-          : { completedSegments: 0, bytesWritten: 0, segmentEndOffsets: [] };
-        checkpoint = {
-          version: 1,
-          playlistFingerprint: fingerprint,
-          directoryName: directory.name,
-          ...(directoryHandleId ? { directoryHandleId } : {}),
-          partialFilename: expectedPartialFilename,
-          finalFilename: details.filename,
-          completedSegments: reconciled.completedSegments,
-          totalSegments: downloadPlaylist.segments.length,
-          bytesWritten: reconciled.bytesWritten,
-          segmentEndOffsets: reconciled.segmentEndOffsets,
-          updatedAt: Date.now(),
-        };
-        await recordTaskEvent(task.id, 'resume-prepared', 'info', {
-          directoryName: directory.name,
-          filename: checkpoint.partialFilename,
-          completedSegments: checkpoint.completedSegments,
-          totalSegments: checkpoint.totalSegments,
-          bytesWritten: checkpoint.bytesWritten,
-        });
-        task = await persistTask({ ...resetTaskState(task, 'downloading'), checkpoint });
-        const writer = await openResumableDirectoryOutputWriter(
-          directory,
-          checkpoint.partialFilename,
-          checkpoint.bytesWritten,
-        );
-        await recordTaskEvent(task.id, 'output-opened', 'info', {
-          directoryName: directory.name,
-          filename: checkpoint.partialFilename,
-          bytesWritten: checkpoint.bytesWritten,
-        });
-        await recordTaskEvent(task.id, 'download-started', 'info', {
-          completedSegments: checkpoint.completedSegments,
-          totalSegments: checkpoint.totalSegments,
-        });
-        await downloadHlsPlaylist(downloadPlaylist, writer, {
-          signal,
-          networkPolicy,
-          loadText,
-          startSegmentIndex: checkpoint.completedSegments,
-          initialBytesWritten: checkpoint.bytesWritten,
-          onProgress: (progress) => {
-            latestProgress = progress;
-            showProgress(task.id, progress);
-          },
-          onRequestRetry: (retry) => recordRequestRetry(
-            retry,
-            retry.resourceKind,
-            retry.resourceUrl,
-            retry.segment,
-          ),
-          onSegmentComplete: async (progress) => {
-            const segmentEndOffsets = checkpoint!.segmentEndOffsets.slice(0, progress.completedSegments - 1);
-            segmentEndOffsets.push(progress.bytesWritten);
-            checkpoint = {
-              ...checkpoint!,
-              completedSegments: progress.completedSegments,
-              bytesWritten: progress.bytesWritten,
-              segmentEndOffsets,
-              updatedAt: Date.now(),
-            };
-            task = await persistTask({ ...task, progress, checkpoint });
-            if (shouldRecordCheckpoint(progress.completedSegments, progress.totalSegments)) {
-              void recordTaskEvent(task.id, 'checkpoint-saved', 'info', {
-                completedSegments: progress.completedSegments,
-                totalSegments: progress.totalSegments,
-                bytesWritten: progress.bytesWritten,
-              });
-            }
-          },
-        });
-        if (checkpoint.completedSegments !== downloadPlaylist.segments.length) {
-          throw new Error(t('partialClosedEarly'));
-        }
-        await recordTaskEvent(task.id, 'finalize-started', 'info', {
-          filename: checkpoint.finalFilename,
-          bytesWritten: checkpoint.bytesWritten,
-        });
-        await finalizePartialOutput(directory, checkpoint, details, signal, (progress) => {
+      const executor = findTaskExecutor(media.kind);
+      if (!executor) throw new Error(t('hlsBatchOnly'));
+      const execution = await executor.execute({
+        task,
+        media,
+        directory,
+        ...(directoryHandleId ? { directoryHandleId } : {}),
+        signal,
+        networkPolicy,
+        networkSettings,
+        loadText,
+        persistTask: async (next) => {
+          task = await persistTask(next);
+          return task;
+        },
+        onProgress: (progress) => {
           latestProgress = progress;
           showProgress(task.id, progress);
-        }, t);
-        partialOutputToRemove = checkpoint.partialFilename;
-      } else {
-        const destination = await openDirectoryOutputWriter(directory, details.filename);
-        const writer = createHlsOutputWriter(destination, details);
-        task = await persistTask(resetTaskState(task, 'downloading'));
-        await recordTaskEvent(task.id, 'output-opened', 'info', {
-          directoryName: directory.name,
-          filename: details.filename,
-        });
-        await recordTaskEvent(task.id, 'download-started', 'info', {
-          totalSegments: downloadPlaylist.segments.length,
-        });
-        await downloadHlsPlaylist(downloadPlaylist, writer, {
-          signal,
-          networkPolicy,
-          loadText,
-          onProgress: (progress) => {
-            latestProgress = progress;
-            showProgress(task.id, progress);
-          },
-          onRequestRetry: (retry) => recordRequestRetry(
-            retry,
-            retry.resourceKind,
-            retry.resourceUrl,
-            retry.segment,
-          ),
-        });
-      }
-
-      const validation = await commitValidatedDirectoryOutput(directory, details.filename, {
-        format: details.extension === 'mp4' ? 'mp4' : 'ts',
-        ...(details.extension === 'ts' && latestProgress?.bytesWritten !== undefined
-          ? { expectedBytes: latestProgress.bytesWritten }
-          : {}),
-        requireVideo: true,
-      }, partialOutputToRemove ?? undefined);
+        },
+        recordTaskEvent: (code, level, details) =>
+          recordTaskEvent(task.id, code, level ?? 'info', details ?? {}),
+        recordRequestRetry,
+        t,
+      });
+      const validation = await commitValidatedDirectoryOutput(
+        directory,
+        execution.finalFilename,
+        execution.validationOptions,
+        execution.partialOutputToRemove,
+      );
       await recordTaskEvent(task.id, 'output-validated', 'info', {
-        filename: details.filename,
+        filename: execution.finalFilename,
         bytesWritten: validation.size,
         ...(validation.videoTracks === undefined ? {} : { videoTracks: validation.videoTracks }),
         ...(validation.audioTracks === undefined ? {} : { audioTracks: validation.audioTracks }),
