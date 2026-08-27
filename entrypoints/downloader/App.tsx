@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { formatByteRate, formatBytes, formatDuration, safeFilename } from '~/src/core/format';
+import { formatBytes, safeFilename } from '~/src/core/format';
+import { ProgressMetrics } from '~/src/components/progress-metrics';
 import { parseDashMediaSource } from '~/src/core/protocols/dash';
 import { downloadDashPlan, preferredDashTrack, prepareDashDownload } from '~/src/core/dash/download-dash';
 import type { HlsRendition, HlsVariant } from '~/src/core/protocols/hls';
@@ -20,7 +21,7 @@ import { openOutputWriter } from '~/src/browser/output-writer';
 import { readSettings, setOutputFormat as persistOutputFormat } from '~/src/browser/settings';
 import { createHlsOutputWriter } from '~/src/browser/hls-output-writer';
 import { SeparateTrackFmp4Writer } from '~/src/browser/separate-track-fmp4-writer';
-import { createTranslator, type MessageKey, type Translator } from '~/src/shared/i18n';
+import { createTranslator, type Translator } from '~/src/shared/i18n';
 import type { DashMediaSource, DashTrack, MediaCandidate } from '~/src/shared/media';
 import {
   NETWORK_PRESETS,
@@ -29,16 +30,6 @@ import {
   type NetworkSettings,
   type OutputFormat,
 } from '~/src/shared/settings';
-
-const PHASE_LABEL_KEYS: Record<NonNullable<HlsDownloadProgress['phase']>, MessageKey> = {
-  requesting: 'phaseRequesting',
-  downloading: 'phaseDownloading',
-  decrypting: 'phaseDecrypting',
-  processing: 'phaseProcessing',
-  finalizing: 'phaseFinalizing',
-  retrying: 'phaseRetrying',
-  completed: 'phaseCompleted',
-};
 
 function progressValue(progress: HlsDownloadProgress): number {
   if (!progress.currentSegmentBytesTotal) return progress.completedSegments;
@@ -83,39 +74,7 @@ function progressPanel(progress: HlsDownloadProgress | null, t: Translator) {
         <span>{formatBytes(progress.bytesWritten)}</span>
       </div>
       <progress value={progressValue(progress)} max={progress.totalSegments} />
-      <div className="progress-metrics">
-        <span>{progress.phase ? t(PHASE_LABEL_KEYS[progress.phase]) : t('downloading')}</span>
-        {formatByteRate(progress.currentSpeedBytesPerSecond) && (
-          <span>{t('nowRate', { rate: formatByteRate(progress.currentSpeedBytesPerSecond)! })}</span>
-        )}
-        {formatByteRate(progress.averageSpeedBytesPerSecond) && (
-          <span>{t('averageRate', { rate: formatByteRate(progress.averageSpeedBytesPerSecond)! })}</span>
-        )}
-        {formatDuration(progress.estimatedSecondsRemaining) && (
-          <span>{t('eta', { duration: formatDuration(progress.estimatedSecondsRemaining)! })}</span>
-        )}
-        {formatBytes(progress.currentSegmentBytesReceived) && formatBytes(progress.currentSegmentBytesTotal) && (
-          <span>
-            {t('segmentBytes', {
-              received: formatBytes(progress.currentSegmentBytesReceived)!,
-              total: formatBytes(progress.currentSegmentBytesTotal)!,
-            })}
-          </span>
-        )}
-        {progress.lastSegmentDurationMs !== undefined && (
-          <span>{t('lastSegment', { duration: formatDuration(progress.lastSegmentDurationMs / 1_000)! })}</span>
-        )}
-      </div>
-      {progress.phase === 'retrying' && (
-        <p className="retry-detail">
-          {t('retryAttempt', {
-            attempt: progress.retryAttempt ?? 0,
-            max: progress.maxAttempts ?? 0,
-            duration: formatDuration((progress.retryDelayMs ?? 0) / 1_000) ?? '0s',
-          })}
-          {progress.retryReason ? ` · ${progress.retryReason}` : ''}
-        </p>
-      )}
+      <ProgressMetrics progress={progress} t={t} />
     </div>
   );
 }

@@ -33,7 +33,8 @@ import { commitValidatedDirectoryOutput } from '~/src/browser/validated-output';
 import { findTaskExecutor } from '~/src/browser/task-executors/registry';
 import { buildTaskDiagnosticReport } from '~/src/core/diagnostics/task-report';
 import { resolveDiscoveredMedia } from '~/src/core/discovery/registry';
-import { formatByteRate, formatBytes, formatDuration, safeFilename } from '~/src/core/format';
+import { formatBytes, formatDuration, safeFilename } from '~/src/core/format';
+import { ProgressMetrics } from '~/src/components/progress-metrics';
 import {
   fetchTextResource,
   isRecoverableNetworkError,
@@ -56,7 +57,6 @@ import {
   DOWNLOAD_TASKS_STORAGE_KEY,
   type DashDownloadCheckpoint,
   type DownloadTask,
-  type DownloadTaskProgress,
   type DownloadTaskStatus,
 } from '~/src/shared/download-task';
 import type { DiscoveredMediaItem } from '~/src/shared/discovery';
@@ -92,16 +92,6 @@ const STATUS_LABEL_KEYS: Record<DownloadTaskStatus, MessageKey> = {
   completed: 'statusCompleted',
   failed: 'statusFailed',
   cancelled: 'statusCancelled',
-};
-
-const PHASE_LABEL_KEYS: Record<NonNullable<DownloadTaskProgress['phase']>, MessageKey> = {
-  requesting: 'phaseRequesting',
-  downloading: 'phaseDownloading',
-  decrypting: 'phaseDecrypting',
-  processing: 'phaseProcessing',
-  finalizing: 'phaseFinalizing',
-  retrying: 'phaseRetrying',
-  completed: 'phaseCompleted',
 };
 
 const FAILURE_CATEGORY_LABEL_KEYS: Record<DownloadFailureCategory, MessageKey> = {
@@ -152,14 +142,6 @@ function TaskProgress({ progress, t }: {
   progress: NonNullable<DownloadTask['progress']>;
   t: Translator;
 }) {
-  const currentRate = formatByteRate(progress.currentSpeedBytesPerSecond);
-  const averageRate = formatByteRate(progress.averageSpeedBytesPerSecond);
-  const eta = formatDuration(progress.estimatedSecondsRemaining);
-  const segmentReceived = formatBytes(progress.currentSegmentBytesReceived);
-  const segmentTotal = formatBytes(progress.currentSegmentBytesTotal);
-  const lastSegmentTime = progress.lastSegmentDurationMs === undefined
-    ? null
-    : formatDuration(progress.lastSegmentDurationMs / 1_000);
   return (
     <div className="progress-block">
       <div className="progress-headline">
@@ -167,26 +149,7 @@ function TaskProgress({ progress, t }: {
         <span>{formatBytes(progress.bytesWritten)}</span>
       </div>
       <progress value={progressValue(progress)} max={progress.totalSegments} />
-      <div className="progress-metrics">
-        <span>{progress.phase ? t(PHASE_LABEL_KEYS[progress.phase]) : t('downloading')}</span>
-        {currentRate && <span>{t('nowRate', { rate: currentRate })}</span>}
-        {averageRate && <span>{t('averageRate', { rate: averageRate })}</span>}
-        {eta && <span>{t('eta', { duration: eta })}</span>}
-        {segmentReceived && segmentTotal && (
-          <span>{t('segmentBytes', { received: segmentReceived, total: segmentTotal })}</span>
-        )}
-        {lastSegmentTime && <span>{t('lastSegment', { duration: lastSegmentTime })}</span>}
-      </div>
-      {progress.phase === 'retrying' && progress.retryAttempt !== undefined && (
-        <p className="retry-detail">
-          {t('retryAttempt', {
-            attempt: progress.retryAttempt,
-            max: progress.maxAttempts ?? 0,
-            duration: formatDuration((progress.retryDelayMs ?? 0) / 1_000) ?? '0s',
-          })}
-          {progress.retryReason ? ` · ${progress.retryReason}` : ''}
-        </p>
-      )}
+      <ProgressMetrics progress={progress} t={t} />
     </div>
   );
 }
