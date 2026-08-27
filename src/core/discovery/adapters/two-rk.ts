@@ -61,6 +61,7 @@ export const twoRkDiscoveryAdapter: SiteDiscoveryAdapter = {
         adapterId: ADAPTER_ID,
         pageUrl: item.pageUrl,
         title: item.title,
+        mediaKind: 'hls',
         sequence,
         ...(groupTitle ? { seriesTitle: groupTitle } : {}),
       }));

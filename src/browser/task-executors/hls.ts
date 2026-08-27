@@ -98,6 +98,7 @@ export const hlsTaskExecutor: ProtocolTaskExecutor = {
     const downloadPlaylist = combinedHlsMediaPlaylist(hls);
     await context.recordTaskEvent('manifest-loaded', 'info', {
       ...diagnosticResource(hls.selectedVariant?.uri ?? context.media.url),
+      protocol: 'hls',
       totalSegments: downloadPlaylist.segments.length,
     });
     if (hls.audioMedia) {

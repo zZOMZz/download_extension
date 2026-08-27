@@ -34,6 +34,7 @@ export const taskDiagnosticEventCodeSchema = z.enum([
   'source-refresh-started',
   'source-refreshed',
   'manifest-loaded',
+  'dash-tracks-selected',
   'audio-rendition-loaded',
   'output-opened',
   'resume-prepared',
@@ -75,6 +76,15 @@ export const taskDiagnosticEventSchema = z.object({
   nextRetryAt: z.number().int().nonnegative().optional(),
   filename: z.string().optional(),
   directoryName: z.string().optional(),
+  protocol: z.enum(['hls', 'dash']).optional(),
+  videoTrackId: z.string().optional(),
+  audioTrackId: z.string().optional(),
+  videoCodec: z.string().optional(),
+  audioCodec: z.string().optional(),
+  videoWidth: z.number().int().positive().optional(),
+  videoHeight: z.number().int().positive().optional(),
+  videoBandwidth: z.number().int().nonnegative().optional(),
+  audioBandwidth: z.number().int().nonnegative().optional(),
 });
 
 export const TASK_DIAGNOSTICS_STORAGE_KEY = 'download-task-diagnostics:v1';

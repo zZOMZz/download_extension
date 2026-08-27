@@ -54,6 +54,7 @@ import { resetTaskState } from '~/src/core/task-state';
 import { createTranslator, LANGUAGE_OPTIONS, type MessageKey, type Translator } from '~/src/shared/i18n';
 import {
   DOWNLOAD_TASKS_STORAGE_KEY,
+  type DashDownloadCheckpoint,
   type DownloadTask,
   type DownloadTaskProgress,
   type DownloadTaskStatus,
@@ -124,6 +125,7 @@ const DIAGNOSTIC_EVENT_LABEL_KEYS: Record<TaskDiagnosticEventCode, MessageKey> =
   'source-refresh-started': 'eventSourceRefreshStarted',
   'source-refreshed': 'eventSourceRefreshed',
   'manifest-loaded': 'eventManifestLoaded',
+  'dash-tracks-selected': 'eventDashTracksSelected',
   'audio-rendition-loaded': 'eventAudioRenditionLoaded',
   'output-opened': 'eventOutputOpened',
   'resume-prepared': 'eventResumePrepared',
@@ -189,8 +191,49 @@ function TaskProgress({ progress, t }: {
   );
 }
 
+function taskMediaKind(task: DownloadTask): 'hls' | 'dash' | undefined {
+  if (task.source.mediaKind) return task.source.mediaKind;
+  if (task.checkpoint?.version === 1) return 'hls';
+  if (task.checkpoint?.version === 2) return 'dash';
+  return undefined;
+}
+
+function formatBitRate(bitsPerSecond: number | undefined): string | undefined {
+  if (bitsPerSecond === undefined) return undefined;
+  return bitsPerSecond >= 1_000_000
+    ? `${(bitsPerSecond / 1_000_000).toFixed(1)} Mbps`
+    : `${Math.round(bitsPerSecond / 1_000)} kbps`;
+}
+
+function DashCheckpointProgress({ checkpoint, t }: {
+  checkpoint: DashDownloadCheckpoint;
+  t: Translator;
+}) {
+  return (
+    <div className="dash-track-progress">
+      {(['video', 'audio'] as const).map((kind) => {
+        const track = checkpoint.tracks[kind];
+        return (
+          <div className="dash-track" key={kind}>
+            <div>
+              <strong>{t(kind === 'video' ? 'videoTrack' : 'audioTrack')}</strong>
+              <span>{t('segmentsProgress', {
+                completed: track.completedSegments,
+                total: track.totalSegments,
+              })}</span>
+              <span>{formatBytes(track.bytesWritten) ?? '0 B'}</span>
+            </div>
+            <progress value={track.completedSegments} max={track.totalSegments} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function diagnosticEventMetadata(event: TaskDiagnosticEvent, t: Translator): string[] {
   const details: string[] = [];
+  if (event.protocol) details.push(t(event.protocol === 'dash' ? 'protocolDash' : 'protocolHls'));
   if (event.resourceHost) details.push(`${event.resourceHost}${event.resourcePath ?? ''}`);
   if (event.httpStatus) details.push(`HTTP ${event.httpStatus}`);
   if (event.segment) details.push(t('diagnosticSegment', { segment: event.segment }));
@@ -215,6 +258,23 @@ function diagnosticEventMetadata(event: TaskDiagnosticEvent, t: Translator): str
       video: event.videoTracks ?? 0,
       audio: event.audioTracks ?? 0,
     }));
+  }
+  if (event.videoTrackId) {
+    const trackDetails = [
+      event.videoTrackId,
+      event.videoWidth && event.videoHeight ? `${event.videoWidth}×${event.videoHeight}` : undefined,
+      event.videoCodec,
+      formatBitRate(event.videoBandwidth),
+    ].filter(Boolean).join(' · ');
+    details.push(t('diagnosticVideoTrack', { details: trackDetails }));
+  }
+  if (event.audioTrackId) {
+    const trackDetails = [
+      event.audioTrackId,
+      event.audioCodec,
+      formatBitRate(event.audioBandwidth),
+    ].filter(Boolean).join(' · ');
+    details.push(t('diagnosticAudioTrack', { details: trackDetails }));
   }
   if (event.durationSeconds !== undefined) {
     details.push(t('diagnosticMediaDuration', {
@@ -459,7 +519,16 @@ export function App() {
     const items = discovered.filter(({ id }) => selectedIds.has(id));
     if (items.length === 0) return;
     try {
-      setTasks(await addPersistentDownloadTasks(items, outputFormat));
+      const dashItems = items.filter(({ mediaKind }) => mediaKind === 'dash');
+      const otherItems = items.filter(({ mediaKind }) => mediaKind !== 'dash');
+      let savedTasks = tasks;
+      if (otherItems.length > 0) {
+        savedTasks = await addPersistentDownloadTasks(otherItems, outputFormat);
+      }
+      if (dashItems.length > 0) {
+        savedTasks = await addPersistentDownloadTasks(dashItems, 'mp4');
+      }
+      setTasks(savedTasks);
       setSelectedIds(new Set());
       setError(null);
     } catch (cause) {
@@ -528,6 +597,7 @@ export function App() {
       const media = await resolveDiscoveredMedia(task.source, { fetchText: loadText, signal });
       await recordTaskEvent(task.id, 'source-resolved', 'info', {
         ...diagnosticResource(media.url),
+        ...(media.kind === 'hls' || media.kind === 'dash' ? { protocol: media.kind } : {}),
       });
       if (!directory) throw new Error(t('chooseDirectoryBeforeQueue'));
       const executor = findTaskExecutor(media.kind);
@@ -834,6 +904,7 @@ export function App() {
   const queuedCount = tasks.filter(({ status }) => status === 'queued' || status === 'waiting').length;
   const completedCount = tasks.filter(({ status }) => status === 'completed').length;
   const activeCount = tasks.filter(({ status }) => status === 'resolving' || status === 'downloading').length;
+  const discoveredDashOnly = discovered.length > 0 && discovered.every(({ mediaKind }) => mediaKind === 'dash');
 
   return (
     <main>
@@ -913,11 +984,16 @@ export function App() {
           <div className="add-bar">
             <label>
               {t('output')}
-              <select value={outputFormat} onChange={(event) => void changeOutputFormat(event.target.value as OutputFormat)}>
+              <select
+                value={discoveredDashOnly ? 'mp4' : outputFormat}
+                disabled={discoveredDashOnly}
+                onChange={(event) => void changeOutputFormat(event.target.value as OutputFormat)}
+              >
                 <option value="mp4">{t('mp4LosslessRemux')}</option>
                 <option value="original">{t('originalStream')}</option>
               </select>
             </label>
+            {discoveredDashOnly && <p className="dash-output-note">{t('dashBatchMp4Notice')}</p>}
             <button className="primary" disabled={selectedIds.size === 0} onClick={() => void addSelected()}>
               {t('addSelected', { count: selectedIds.size })}
             </button>
@@ -1061,12 +1137,26 @@ export function App() {
 
         {tasks.length === 0 && <div className="empty">{t('noBatchTasks')}</div>}
         <div className="task-list">
-          {tasks.map((task) => (
+          {tasks.map((task) => {
+            const mediaKind = taskMediaKind(task);
+            return (
             <article className="task" key={task.id}>
               <div className="task-copy">
                 <div className="task-title">
                   <strong>{task.source.title}</strong>
-                  <span className={`status status-${task.status}`}>{t(STATUS_LABEL_KEYS[task.status])}</span>
+                  <div className="task-badges">
+                    {mediaKind && (
+                      <span className={`protocol protocol-${mediaKind}`}>
+                        {t(mediaKind === 'dash' ? 'protocolDash' : 'protocolHls')}
+                      </span>
+                    )}
+                    <span className="output-badge">
+                      {mediaKind === 'dash' || task.outputFormat === 'mp4'
+                        ? t('outputMp4')
+                        : t('outputOriginal')}
+                    </span>
+                    <span className={`status status-${task.status}`}>{t(STATUS_LABEL_KEYS[task.status])}</span>
+                  </div>
                 </div>
                 <span>{task.source.seriesTitle}</span>
                 {task.error && <p className="task-error">{task.error}</p>}
@@ -1095,6 +1185,9 @@ export function App() {
                       bytes: formatBytes(task.checkpoint.bytesWritten) ?? '0 B',
                     })}
                   </p>
+                )}
+                {task.checkpoint?.version === 2 && task.status !== 'completed' && (
+                  <DashCheckpointProgress checkpoint={task.checkpoint} t={t} />
                 )}
                 {task.progress && <TaskProgress progress={task.progress} t={t} />}
                 {expandedTaskId === task.id && (
@@ -1146,7 +1239,8 @@ export function App() {
                 )}
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       </section>
 

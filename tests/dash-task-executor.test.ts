@@ -145,7 +145,7 @@ describe('DASH task executor', () => {
       updatedAt: 1,
     };
     const checkpoints: DownloadTask[] = [];
-    const events: string[] = [];
+    const events: Array<{ code: string; details?: unknown }> = [];
     let refreshCalls = 0;
     const { directory, files } = memoryDirectory();
     const result = await dashTaskExecutor.execute({
@@ -177,7 +177,9 @@ describe('DASH task executor', () => {
         return next;
       },
       onProgress: () => {},
-      recordTaskEvent: async (code) => { events.push(code); },
+      recordTaskEvent: async (code, _level, details) => {
+        events.push({ code, ...(details ? { details } : {}) });
+      },
       recordRequestRetry: () => {},
       t: createTranslator('en'),
     });
@@ -190,10 +192,19 @@ describe('DASH task executor', () => {
       'https://cdn.example/audio-1?token=fresh',
     ]);
     expect(refreshCalls).toBe(1);
-    expect(events).toEqual(expect.arrayContaining([
+    expect(events.map(({ code }) => code)).toEqual(expect.arrayContaining([
       'source-refresh-started',
       'source-refreshed',
     ]));
+    expect(events.find(({ code }) => code === 'dash-tracks-selected')).toMatchObject({
+      details: {
+        protocol: 'dash',
+        videoTrackId: 'video',
+        videoCodec: 'avc1.64001f',
+        audioTrackId: 'audio',
+        audioCodec: 'mp4a.40.2',
+      },
+    });
     expect(checkpoints.some(({ checkpoint }) =>
       checkpoint?.version === 2 &&
       checkpoint.tracks.video.completedSegments === 1 &&

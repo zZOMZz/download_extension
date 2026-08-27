@@ -1,4 +1,4 @@
-import type { DownloadTask } from '../../shared/download-task';
+import type { DownloadCheckpoint, DownloadTask } from '../../shared/download-task';
 import type { NetworkSettings, TaskConcurrency } from '../../shared/settings';
 import type { TaskDiagnosticEvent } from '../../shared/task-diagnostics';
 import { sanitizeDiagnosticText } from '../../shared/task-diagnostics';
@@ -19,6 +19,56 @@ function urlWithoutSecrets(rawUrl: string): string {
   }
 }
 
+function taskMediaKind(task: DownloadTask): 'hls' | 'dash' | undefined {
+  if (task.source.mediaKind) return task.source.mediaKind;
+  if (task.checkpoint?.version === 1) return 'hls';
+  if (task.checkpoint?.version === 2) return 'dash';
+  return undefined;
+}
+
+function checkpointReport(checkpoint: DownloadCheckpoint) {
+  const common = {
+    version: checkpoint.version,
+    protocol: checkpoint.version === 1 ? 'hls' : 'dash',
+    directoryName: checkpoint.directoryName,
+    directoryHandleId: checkpoint.directoryHandleId,
+    finalFilename: checkpoint.finalFilename,
+    completedSegments: checkpoint.completedSegments,
+    totalSegments: checkpoint.totalSegments,
+    bytesWritten: checkpoint.bytesWritten,
+    updatedAt: new Date(checkpoint.updatedAt).toISOString(),
+  } as const;
+
+  if (checkpoint.version === 1) {
+    return {
+      ...common,
+      playlistFingerprint: checkpoint.playlistFingerprint,
+      partialFilename: checkpoint.partialFilename,
+      savedBoundaries: checkpoint.segmentEndOffsets.length,
+    };
+  }
+
+  return {
+    ...common,
+    planFingerprint: checkpoint.planFingerprint,
+    tracks: Object.fromEntries(
+      (['video', 'audio'] as const).map((kind) => {
+        const track = checkpoint.tracks[kind];
+        return [kind, {
+          trackId: track.trackId,
+          fingerprint: track.fingerprint,
+          partialFilename: track.partialFilename,
+          initializationBytes: track.initializationBytes,
+          completedSegments: track.completedSegments,
+          totalSegments: track.totalSegments,
+          bytesWritten: track.bytesWritten,
+          savedBoundaries: track.segmentEndOffsets.length,
+        }];
+      }),
+    ),
+  };
+}
+
 export function buildTaskDiagnosticReport(
   task: DownloadTask,
   events: TaskDiagnosticEvent[],
@@ -26,7 +76,7 @@ export function buildTaskDiagnosticReport(
 ): string {
   const generatedAt = context.generatedAt ?? Date.now();
   return JSON.stringify({
-    reportVersion: 1,
+    reportVersion: 2,
     generatedAt: new Date(generatedAt).toISOString(),
     environment: {
       userAgent: context.userAgent ?? 'unknown',
@@ -39,6 +89,7 @@ export function buildTaskDiagnosticReport(
       title: task.source.title,
       seriesTitle: task.source.seriesTitle,
       pageUrl: urlWithoutSecrets(task.source.pageUrl),
+      mediaKind: taskMediaKind(task),
       outputFormat: task.outputFormat,
       status: task.status,
       createdAt: new Date(task.createdAt).toISOString(),
@@ -48,22 +99,7 @@ export function buildTaskDiagnosticReport(
         message: sanitizeDiagnosticText(task.failure.message),
       } : undefined,
       progress: task.progress,
-      checkpoint: task.checkpoint ? {
-        version: task.checkpoint.version,
-        directoryName: task.checkpoint.directoryName,
-        directoryHandleId: task.checkpoint.directoryHandleId,
-        partialFilenames: task.checkpoint.version === 1
-          ? [task.checkpoint.partialFilename]
-          : [
-              task.checkpoint.tracks.video.partialFilename,
-              task.checkpoint.tracks.audio.partialFilename,
-            ],
-        finalFilename: task.checkpoint.finalFilename,
-        completedSegments: task.checkpoint.completedSegments,
-        totalSegments: task.checkpoint.totalSegments,
-        bytesWritten: task.checkpoint.bytesWritten,
-        updatedAt: new Date(task.checkpoint.updatedAt).toISOString(),
-      } : undefined,
+      checkpoint: task.checkpoint ? checkpointReport(task.checkpoint) : undefined,
       recoveryAttempt: task.recoveryAttempt,
       nextRetryAt: task.nextRetryAt ? new Date(task.nextRetryAt).toISOString() : undefined,
     },

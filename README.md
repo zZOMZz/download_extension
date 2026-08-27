@@ -43,7 +43,8 @@ pnpm build
 - Refresh expired DASH CDN URLs after 401/403 responses, verify track identity, and continue from the committed fragment boundary.
 - Remember the selected output directory in IndexedDB, restore it when permission remains granted, and offer one-click reconnection otherwise.
 - Adapt request concurrency per host after repeated 429, 5xx, timeout, or transport failures, including a short circuit-breaker cooldown.
-- Keep bounded per-task diagnostics with structured failure categories and exportable, query-string-redacted JSON reports.
+- Show HLS/DASH and effective output badges in the queue, including independent DASH video/audio checkpoint progress.
+- Keep bounded per-task diagnostics with structured failure categories, selected DASH track metadata, URL-refresh events, and exportable query-string-redacted JSON reports.
 - Validate committed MP4/TS output structure before marking a task complete, including MP4 media tracks and duration.
 - Refuse DRM-like HLS encryption methods and unsupported live playlists.
 - Refuse DRM-protected, live, and multi-period DASH manifests instead of producing partial output.

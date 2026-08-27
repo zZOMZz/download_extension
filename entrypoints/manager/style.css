@@ -43,6 +43,7 @@ button { border: 0; border-radius: 10px; padding: 10px 14px; font-weight: 750; }
 .episode input { accent-color: #216d40; }
 .add-bar { display: flex; justify-content: flex-end; align-items: flex-end; gap: 12px; margin-top: 20px; border-top: 1px solid #e0e4dd; padding-top: 18px; }
 .add-bar label { display: grid; gap: 5px; color: #617066; font-size: 12px; font-weight: 700; }
+.dash-output-note { margin: 0 auto 0 0; color: #5c6d62; font-size: 11px; line-height: 1.4; }
 select { min-width: 190px; border: 1px solid #ccd4ca; border-radius: 9px; padding: 9px 10px; color: #213027; background: #fff; }
 .notice { margin: 14px 0; border-radius: 11px; padding: 12px 14px; }
 .info { color: #31577b; background: #e7f1fb; }
@@ -53,7 +54,13 @@ select { min-width: 190px; border: 1px solid #ccd4ca; border-radius: 9px; paddin
 .task { display: flex; justify-content: space-between; gap: 20px; border: 1px solid #e0e4dd; border-radius: 14px; padding: 15px; background: #fbfcfa; }
 .task-copy { flex: 1; min-width: 0; }
 .task-copy > span { display: block; margin-top: 4px; color: #778179; font-size: 12px; }
-.task-title { display: flex; align-items: center; gap: 10px; }
+.task-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.task-title > strong { min-width: 0; overflow-wrap: anywhere; }
+.task-badges { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.protocol, .output-badge { border-radius: 999px; padding: 3px 8px; font-size: 10px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.protocol-dash { color: #315b72; background: #e1eff5; }
+.protocol-hls { color: #5d4d7a; background: #ece7f7; }
+.output-badge { color: #5f674f; background: #eef0e4; }
 .status { border-radius: 999px; padding: 3px 8px; color: #56635a; background: #e7ebe5; font-size: 10px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
 .status-downloading, .status-resolving { color: #265a38; background: #dff0e4; }
 .status-waiting { color: #8a581d; background: #faecd5; }
@@ -65,6 +72,12 @@ select { min-width: 190px; border: 1px solid #ccd4ca; border-radius: 9px; paddin
 .failure-filesystem, .failure-output, .failure-encryption { color: #8b3030; background: #fae6e3; }
 .recovery-detail { margin: 7px 0 0; color: #93601d; font-size: 11px; }
 .checkpoint-detail { margin: 5px 0 0; color: #3c6749; font-size: 11px; }
+.dash-track-progress { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 9px; }
+.dash-track { border: 1px solid #e0e6df; border-radius: 9px; padding: 8px 9px; background: #f7f9f6; }
+.dash-track > div { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; color: #6a756d; font-size: 10px; }
+.dash-track strong { color: #3c5142; }
+.dash-track span:nth-child(2) { min-width: 0; text-align: center; }
+.dash-track progress { height: 6px; margin-top: 6px; }
 .task-actions { display: flex; align-items: center; align-content: flex-start; flex-wrap: wrap; gap: 5px; }
 .progress-block { display: grid; gap: 6px; margin-top: 11px; }
 .progress-block > div { display: flex; justify-content: space-between; color: #667168; font-size: 11px; }
@@ -88,4 +101,4 @@ progress { width: 100%; height: 8px; border: 0; border-radius: 99px; accent-colo
 .diagnostic-event.event-error strong { color: #983b37; }
 .footnote { margin: 18px 8px; color: #7b837c; font-size: 12px; text-align: center; }
 @media (max-width: 900px) { .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 760px) { body { min-width: 0; } main { width: min(100% - 24px, 1120px); padding: 24px 0; } .hero { align-items: stretch; flex-direction: column; } .hero-actions { justify-content: flex-start; } .panel { padding: 20px; } .section-heading, .settings-heading { align-items: flex-start; flex-direction: column; } .settings-grid { grid-template-columns: 1fr; } .settings-grid .toggle-setting { grid-column: auto; } .task { flex-direction: column; } }
+@media (max-width: 760px) { body { min-width: 0; } main { width: min(100% - 24px, 1120px); padding: 24px 0; } .hero { align-items: stretch; flex-direction: column; } .hero-actions { justify-content: flex-start; } .panel { padding: 20px; } .section-heading, .settings-heading { align-items: flex-start; flex-direction: column; } .settings-grid { grid-template-columns: 1fr; } .settings-grid .toggle-setting { grid-column: auto; } .add-bar { align-items: stretch; flex-direction: column; } .dash-output-note { margin: 0; } .task { flex-direction: column; } .dash-track-progress { grid-template-columns: 1fr; } }

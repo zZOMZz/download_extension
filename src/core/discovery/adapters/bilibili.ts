@@ -57,6 +57,7 @@ function item(
     adapterId: ADAPTER_ID,
     pageUrl: videoPageUrl(bvid, page),
     title,
+    mediaKind: 'dash',
     seriesTitle,
     sequence,
   };

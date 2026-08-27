@@ -224,6 +224,7 @@ export const dashTaskExecutor: ProtocolTaskExecutor = {
       resolvedMedia = refreshed;
       await context.recordTaskEvent('source-refreshed', 'info', {
         ...diagnosticResource(refreshed.url),
+        protocol: 'dash',
         attempt: sourceRefreshAttempt,
         maxAttempts: maxSourceRefreshes,
       });
@@ -238,8 +239,20 @@ export const dashTaskExecutor: ProtocolTaskExecutor = {
       }
     };
     let plan = await prepareWithRefresh();
+    await context.recordTaskEvent('dash-tracks-selected', 'info', {
+      protocol: 'dash',
+      videoTrackId: plan.video.id,
+      audioTrackId: plan.audio.id,
+      ...(plan.video.codecs ? { videoCodec: plan.video.codecs } : {}),
+      ...(plan.audio.codecs ? { audioCodec: plan.audio.codecs } : {}),
+      ...(plan.video.width ? { videoWidth: plan.video.width } : {}),
+      ...(plan.video.height ? { videoHeight: plan.video.height } : {}),
+      ...(plan.video.bandwidth === undefined ? {} : { videoBandwidth: plan.video.bandwidth }),
+      ...(plan.audio.bandwidth === undefined ? {} : { audioBandwidth: plan.audio.bandwidth }),
+    });
     await context.recordTaskEvent('manifest-loaded', 'info', {
       ...diagnosticResource(resolvedMedia.url),
+      protocol: 'dash',
       totalSegments: plan.totalSegments,
     });
     const finalFilename = outputFilename(task);
