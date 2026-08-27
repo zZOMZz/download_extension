@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { shouldIncludeMediaCandidate } from '~/src/core/detection/filter-candidate';
 import { candidateIdentity, mediaCandidateSchema } from '~/src/shared/media';
 import type { CandidateObservation, MediaCandidate } from '~/src/shared/media';
 
@@ -29,7 +30,7 @@ function enqueue(tabId: number, operation: () => Promise<void>): Promise<void> {
 
 export async function listCandidates(tabId: number): Promise<MediaCandidate[]> {
   await queues.get(tabId);
-  return read(tabId);
+  return (await read(tabId)).filter(shouldIncludeMediaCandidate);
 }
 
 export async function findCandidate(tabId: number, candidateId: string): Promise<MediaCandidate | null> {
@@ -42,6 +43,8 @@ export function upsertCandidate(
   frameId: number,
   observation: CandidateObservation,
 ): Promise<void> {
+  if (!shouldIncludeMediaCandidate(observation)) return Promise.resolve();
+
   return enqueue(tabId, async () => {
     const candidates = await read(tabId);
     const identity = candidateIdentity(observation);
