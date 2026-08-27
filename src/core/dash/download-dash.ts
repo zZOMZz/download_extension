@@ -33,6 +33,17 @@ export interface DashDownloadOptions {
   }) => void;
 }
 
+export interface DashTrackDownloadOptions extends DashDownloadOptions {
+  initializationWritten?: boolean;
+  startSegmentIndex?: number;
+  initialBytesWritten?: number;
+  onInitializationComplete?: (bytesWritten: number) => void | Promise<void>;
+  onSegmentComplete?: (
+    progress: HlsDownloadProgress,
+    trackSegmentIndex: number,
+  ) => void | Promise<void>;
+}
+
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
@@ -168,6 +179,8 @@ export async function prepareDashDownload(
     resolveTrack(video, options),
     resolveTrack(audio, options),
   ]);
+  if (!resolvedVideo.segments.length) throw new Error('The selected DASH video track has no media segments.');
+  if (!resolvedAudio.segments.length) throw new Error('The selected DASH audio track has no media segments.');
   return {
     video: resolvedVideo,
     audio: resolvedAudio,
@@ -191,6 +204,138 @@ class SpeedTracker {
       current: (this.totalBytes - oldest.bytes) * 1_000 / Math.max(1, now - oldest.at),
       average: this.totalBytes * 1_000 / Math.max(1, now - this.#startedAt),
     };
+  }
+}
+
+export async function downloadDashTrack(
+  track: ResolvedDashTrack,
+  writer: BinaryWriter,
+  options: DashTrackDownloadOptions = {},
+): Promise<void> {
+  const startSegmentIndex = options.startSegmentIndex ?? 0;
+  const initializationWritten = options.initializationWritten ?? false;
+  if (!Number.isInteger(startSegmentIndex) || startSegmentIndex < 0 || startSegmentIndex > track.segments.length) {
+    throw new Error('The DASH resume segment is outside the selected track.');
+  }
+  if (startSegmentIndex > 0 && !initializationWritten) {
+    throw new Error('A DASH track cannot resume without its initialization segment.');
+  }
+  let bytesWritten = options.initialBytesWritten ?? 0;
+  if (!initializationWritten && bytesWritten !== 0) {
+    throw new Error('A DASH track without initialization cannot have committed bytes.');
+  }
+
+  const speed = new SpeedTracker();
+  const progress: HlsDownloadProgress = {
+    completedSegments: startSegmentIndex,
+    totalSegments: track.segments.length,
+    bytesWritten,
+    networkBytesReceived: 0,
+    phase: 'requesting',
+  };
+  let lastProgressAt = 0;
+  const publish = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastProgressAt < 200) return;
+    const estimate = estimateRemainingSeconds(progress);
+    if (estimate === undefined || !Number.isFinite(estimate)) delete progress.estimatedSecondsRemaining;
+    else progress.estimatedSecondsRemaining = estimate;
+    lastProgressAt = now;
+    options.onProgress?.({ ...progress });
+  };
+  const clearRetryProgress = () => {
+    delete progress.retryAttempt;
+    delete progress.maxAttempts;
+    delete progress.retryDelayMs;
+    delete progress.retryReason;
+  };
+  const download = async (
+    resource: DashResource,
+    resourceKind: 'initialization-segment' | 'media-segment',
+    segment?: number,
+  ) => {
+    progress.phase = 'requesting';
+    progress.currentSegmentBytesReceived = 0;
+    delete progress.currentSegmentBytesTotal;
+    if (segment !== undefined) progress.currentSegment = segment;
+    else delete progress.currentSegment;
+    progress.currentSpeedBytesPerSecond = 0;
+    clearRetryProgress();
+    publish(true);
+    return fetchDashResource(
+      resource,
+      options,
+      resourceKind,
+      (url) => ({
+        onChunk: ({ chunkBytes, attemptBytesReceived, contentLength }) => {
+          const startedReceiving = progress.phase !== 'downloading';
+          const firstReceivedBytes = chunkBytes > 0 && (progress.currentSegmentBytesReceived ?? 0) === 0;
+          const rates = speed.record(chunkBytes);
+          progress.phase = 'downloading';
+          progress.networkBytesReceived = speed.totalBytes;
+          progress.currentSegmentBytesReceived = attemptBytesReceived;
+          if (contentLength !== undefined) progress.currentSegmentBytesTotal = contentLength;
+          progress.currentSpeedBytesPerSecond = rates.current;
+          progress.averageSpeedBytesPerSecond = rates.average;
+          clearRetryProgress();
+          publish(startedReceiving || firstReceivedBytes);
+        },
+        onRetry: (retry) => {
+          progress.phase = 'retrying';
+          progress.retryAttempt = retry.attempt;
+          progress.maxAttempts = retry.maxAttempts;
+          progress.retryDelayMs = retry.delayMs;
+          progress.retryReason = retry.reason;
+          progress.currentSegmentBytesReceived = 0;
+          progress.currentSpeedBytesPerSecond = 0;
+          delete progress.currentSegmentBytesTotal;
+          publish(true);
+          options.onRequestRetry?.({
+            ...retry,
+            resourceKind,
+            resourceUrl: url,
+            ...(segment === undefined ? {} : { segment }),
+          });
+        },
+      }),
+    ).then(({ bytes }) => bytes);
+  };
+
+  try {
+    if (!initializationWritten) {
+      const initialization = await download(track.initialization, 'initialization-segment');
+      progress.phase = 'processing';
+      progress.currentSpeedBytesPerSecond = 0;
+      publish(true);
+      await writer.write(initialization);
+      bytesWritten += initialization.byteLength;
+      progress.bytesWritten = bytesWritten;
+      await options.onInitializationComplete?.(bytesWritten);
+    }
+    for (let index = startSegmentIndex; index < track.segments.length; index += 1) {
+      const startedAt = Date.now();
+      const bytes = await download(track.segments[index]!, 'media-segment', index + 1);
+      progress.phase = 'processing';
+      progress.currentSpeedBytesPerSecond = 0;
+      publish(true);
+      await writer.write(bytes);
+      bytesWritten += bytes.byteLength;
+      progress.completedSegments = index + 1;
+      progress.bytesWritten = bytesWritten;
+      progress.lastSegmentDurationMs = Date.now() - startedAt;
+      progress.currentSegmentBytesReceived = progress.currentSegmentBytesTotal ?? bytes.byteLength;
+      await options.onSegmentComplete?.({ ...progress }, index);
+      publish(true);
+    }
+    await writer.close();
+    progress.phase = 'completed';
+    progress.currentSpeedBytesPerSecond = 0;
+    delete progress.estimatedSecondsRemaining;
+    clearRetryProgress();
+    publish(true);
+  } catch (cause) {
+    await writer.abort(cause);
+    throw cause;
   }
 }
 

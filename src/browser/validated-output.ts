@@ -13,10 +13,12 @@ export async function commitValidatedDirectoryOutput(
   directory: WritableDirectoryHandle,
   finalFilename: string,
   options: OutputValidationOptions,
-  partialFilename?: string,
+  partialFilenames: readonly string[] = [],
 ): Promise<OutputValidationResult> {
   const output = await readDirectoryFile(directory, finalFilename);
   const validation = await validateMediaOutput(output, options);
-  if (partialFilename) await removeDirectoryFile(directory, partialFilename);
+  for (const partialFilename of partialFilenames) {
+    await removeDirectoryFile(directory, partialFilename);
+  }
   return validation;
 }

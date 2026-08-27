@@ -40,7 +40,7 @@ export interface TaskExecutorContext {
 export interface TaskExecutorResult {
   finalFilename: string;
   validationOptions: OutputValidationOptions;
-  partialOutputToRemove?: string;
+  partialOutputsToRemove?: readonly string[];
 }
 
 export interface ProtocolTaskExecutor {

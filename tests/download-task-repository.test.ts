@@ -96,4 +96,54 @@ describe('persistent download task repository', () => {
       checkpoint: { completedSegments: 2, bytesWritten: 20 },
     });
   });
+
+  it('persists independent DASH video and audio checkpoints', async () => {
+    const [task] = await addDownloadTasks([item(1)], 'mp4');
+    const waiting = await replaceDownloadTask({
+      ...task!,
+      status: 'waiting',
+      checkpoint: {
+        version: 2,
+        protocol: 'dash',
+        planFingerprint: 'dash-plan-v1:test',
+        directoryName: 'Downloads',
+        finalFilename: 'episode.mp4',
+        completedSegments: 3,
+        totalSegments: 5,
+        bytesWritten: 500,
+        tracks: {
+          video: {
+            trackId: 'video',
+            fingerprint: 'dash-track-v1:video',
+            partialFilename: 'episode.video.part.m4s',
+            initializationBytes: 100,
+            completedSegments: 2,
+            totalSegments: 3,
+            bytesWritten: 300,
+            segmentEndOffsets: [200, 300],
+          },
+          audio: {
+            trackId: 'audio',
+            fingerprint: 'dash-track-v1:audio',
+            partialFilename: 'episode.audio.part.m4s',
+            initializationBytes: 100,
+            completedSegments: 1,
+            totalSegments: 2,
+            bytesWritten: 200,
+            segmentEndOffsets: [200],
+          },
+        },
+        updatedAt: 4_000,
+      },
+    });
+
+    expect(waiting.checkpoint).toMatchObject({
+      version: 2,
+      completedSegments: 3,
+      tracks: {
+        video: { completedSegments: 2 },
+        audio: { completedSegments: 1 },
+      },
+    });
+  });
 });

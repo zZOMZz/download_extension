@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { downloadDashPlan, preferredDashTrack, type DashDownloadPlan } from '../src/core/dash/download-dash';
+import {
+  downloadDashPlan,
+  downloadDashTrack,
+  preferredDashTrack,
+  type DashDownloadPlan,
+} from '../src/core/dash/download-dash';
 import { fetchBinaryResource, type BinaryWriter, type HlsDownloadProgress } from '../src/core/hls/download-hls';
 import type { DashMediaSource } from '../src/shared/media';
 
@@ -10,6 +15,28 @@ class TestWriter implements BinaryWriter {
 
   async write(chunk: Uint8Array): Promise<void> {
     this.chunks.push(chunk.slice());
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+
+  async abort(): Promise<void> {
+    this.aborted = true;
+  }
+}
+
+class ResumableTestWriter implements BinaryWriter {
+  bytes: number[];
+  closed = false;
+  aborted = false;
+
+  constructor(initial: readonly number[] = []) {
+    this.bytes = [...initial];
+  }
+
+  async write(chunk: Uint8Array): Promise<void> {
+    this.bytes.push(...chunk);
   }
 
   async close(): Promise<void> {
@@ -150,5 +177,77 @@ describe('DASH download engine', () => {
       nextUrl: 'https://backup.example/video-init',
     }]);
     expect(writer.closed).toBe(true);
+  });
+
+  it('resumes a track without requesting its committed initialization and segments again', async () => {
+    const track: DashDownloadPlan['video'] = {
+      id: 'video',
+      kind: 'video',
+      initialization: { url: 'https://cdn.example/init' },
+      segments: [
+        { url: 'https://cdn.example/one' },
+        { url: 'https://cdn.example/two' },
+        { url: 'https://cdn.example/three' },
+      ],
+    };
+    const resources = new Map([
+      ['https://cdn.example/init', Uint8Array.of(10, 11)],
+      ['https://cdn.example/one', Uint8Array.of(20)],
+      ['https://cdn.example/two', Uint8Array.of(30)],
+      ['https://cdn.example/three', Uint8Array.of(40)],
+    ]);
+    const firstRequests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      firstRequests.push(url);
+      if (url.endsWith('/two')) return new Response(null, { status: 503 });
+      return new Response(resources.get(url)!.slice().buffer as ArrayBuffer, { status: 200 });
+    }));
+    const firstWriter = new ResumableTestWriter();
+    let initializationBytes = 0;
+    let completedSegments = 0;
+    let bytesWritten = 0;
+    await expect(downloadDashTrack(track, firstWriter, {
+      networkPolicy: { maxAttempts: 1 },
+      onInitializationComplete: (bytes) => { initializationBytes = bytes; },
+      onSegmentComplete: (progress) => {
+        completedSegments = progress.completedSegments;
+        bytesWritten = progress.bytesWritten;
+      },
+    })).rejects.toThrow(/503/);
+
+    expect(firstRequests).toEqual([
+      'https://cdn.example/init',
+      'https://cdn.example/one',
+      'https://cdn.example/two',
+    ]);
+    expect(firstWriter.bytes).toEqual([10, 11, 20]);
+    expect(firstWriter.aborted).toBe(true);
+    expect({ initializationBytes, completedSegments, bytesWritten }).toEqual({
+      initializationBytes: 2,
+      completedSegments: 1,
+      bytesWritten: 3,
+    });
+
+    const resumeRequests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      resumeRequests.push(url);
+      return new Response(resources.get(url)!.slice().buffer as ArrayBuffer, { status: 200 });
+    }));
+    const resumedWriter = new ResumableTestWriter(firstWriter.bytes);
+    await downloadDashTrack(track, resumedWriter, {
+      networkPolicy: { maxAttempts: 1 },
+      initializationWritten: true,
+      startSegmentIndex: completedSegments,
+      initialBytesWritten: bytesWritten,
+    });
+
+    expect(resumeRequests).toEqual([
+      'https://cdn.example/two',
+      'https://cdn.example/three',
+    ]);
+    expect(resumedWriter.bytes).toEqual([10, 11, 20, 30, 40]);
+    expect(resumedWriter.closed).toBe(true);
   });
 });

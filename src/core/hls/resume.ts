@@ -1,14 +1,5 @@
 import type { HlsMediaPlaylist } from '../protocols/hls';
-import type { DownloadCheckpoint } from '../../shared/download-task';
-
-export function checkpointMatchesDirectory(
-  checkpoint: DownloadCheckpoint,
-  directory: { name: string; handleId?: string },
-): boolean {
-  return checkpoint.directoryHandleId
-    ? checkpoint.directoryHandleId === directory.handleId
-    : checkpoint.directoryName === directory.name;
-}
+import type { HlsDownloadCheckpoint } from '../../shared/download-task';
 
 function stableResourcePath(rawUrl: string): string {
   try {
@@ -49,7 +40,7 @@ export interface ReconciledCheckpointPosition {
 }
 
 export function reconcileCheckpointFile(
-  checkpoint: DownloadCheckpoint,
+  checkpoint: HlsDownloadCheckpoint,
   fileSize: number,
 ): ReconciledCheckpointPosition {
   if (checkpoint.segmentEndOffsets.length !== checkpoint.completedSegments) {

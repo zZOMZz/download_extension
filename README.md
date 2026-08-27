@@ -38,6 +38,7 @@ pnpm build
 - Configure request attempts, first-byte/idle timeouts, task recovery rounds, and retry delays from one manager settings panel.
 - Move exhausted transient failures into a persistent cooldown state, release their pool slot, refresh signed media URLs, and retry automatically.
 - Persist segment-boundary checkpoints and reconcile them with the committed partial file after failures or manager restarts.
+- Resume DASH video and audio tracks independently from committed fragment boundaries before losslessly merging them into MP4.
 - Remember the selected output directory in IndexedDB, restore it when permission remains granted, and offer one-click reconnection otherwise.
 - Adapt request concurrency per host after repeated 429, 5xx, timeout, or transport failures, including a short circuit-breaker cooldown.
 - Keep bounded per-task diagnostics with structured failure categories and exportable, query-string-redacted JSON reports.
@@ -111,5 +112,12 @@ External HLS audio is resolved from the selected variant's `AUDIO` rendition
 group. MPEG-TS or packed-AAC tracks share the resumable raw-partial path;
 fragmented MP4 tracks are flattened directly into one indexed MP4. Mixed
 MPEG-TS and fragmented-MP4 track pairs are rejected explicitly.
+
+Queued DASH downloads use checkpoint version 2 and keep independent
+`.video.part.m4s` and `.audio.part.m4s` files. Each track records its
+initialization boundary and completed fragment offsets, so a retry skips bytes
+that were already committed. The two partials are deleted only after the merged
+MP4 passes structural validation; legacy HLS version 1 checkpoints remain
+readable without migration.
 
 Only download content you own or have permission to save.

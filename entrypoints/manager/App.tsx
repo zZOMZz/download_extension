@@ -48,6 +48,7 @@ import {
 import { OutputValidationError } from '~/src/core/media/output-validator';
 import { runTaskPool } from '~/src/core/task-pool';
 import { classifyTaskError } from '~/src/core/task-error';
+import { checkpointPartialFilenames } from '~/src/core/task-checkpoint';
 import { resetTaskState } from '~/src/core/task-state';
 import { createTranslator, LANGUAGE_OPTIONS, type MessageKey, type Translator } from '~/src/shared/i18n';
 import {
@@ -527,7 +528,7 @@ export function App() {
       });
       if (!directory) throw new Error(t('chooseDirectoryBeforeQueue'));
       const executor = findTaskExecutor(media.kind);
-      if (!executor) throw new Error(t('hlsBatchOnly'));
+      if (!executor) throw new Error(t('batchProtocolUnsupported'));
       const execution = await executor.execute({
         task,
         media,
@@ -554,7 +555,7 @@ export function App() {
         directory,
         execution.finalFilename,
         execution.validationOptions,
-        execution.partialOutputToRemove,
+        execution.partialOutputsToRemove,
       );
       await recordTaskEvent(task.id, 'output-validated', 'info', {
         filename: execution.finalFilename,
@@ -790,7 +791,9 @@ export function App() {
         setError(t('chooseOriginalFolderRestart', { name: task.checkpoint.directoryName }));
         return;
       }
-      await removeDirectoryFile(directory, task.checkpoint.partialFilename);
+      for (const partialFilename of checkpointPartialFilenames(task.checkpoint)) {
+        await removeDirectoryFile(directory, partialFilename);
+      }
     }
     const queued = resetTaskState(task, 'queued');
     delete queued.checkpoint;
@@ -810,7 +813,9 @@ export function App() {
         setError(t('chooseOriginalFolderRemove', { name: task.checkpoint.directoryName }));
         return;
       }
-      await removeDirectoryFile(directory, task.checkpoint.partialFilename);
+      for (const partialFilename of checkpointPartialFilenames(task.checkpoint)) {
+        await removeDirectoryFile(directory, partialFilename);
+      }
     }
     await removePersistentDownloadTask(task.id);
     setTasks((current) => current.filter(({ id }) => id !== task.id));

@@ -52,7 +52,12 @@ export function buildTaskDiagnosticReport(
         version: task.checkpoint.version,
         directoryName: task.checkpoint.directoryName,
         directoryHandleId: task.checkpoint.directoryHandleId,
-        partialFilename: task.checkpoint.partialFilename,
+        partialFilenames: task.checkpoint.version === 1
+          ? [task.checkpoint.partialFilename]
+          : [
+              task.checkpoint.tracks.video.partialFilename,
+              task.checkpoint.tracks.audio.partialFilename,
+            ],
         finalFilename: task.checkpoint.finalFilename,
         completedSegments: task.checkpoint.completedSegments,
         totalSegments: task.checkpoint.totalSegments,

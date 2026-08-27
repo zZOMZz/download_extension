@@ -3,9 +3,10 @@ import { findTaskExecutor } from '../src/browser/task-executors/registry';
 import type { ProtocolTaskExecutor } from '../src/browser/task-executors/types';
 
 describe('task executor registry', () => {
-  it('selects the HLS executor and leaves unsupported protocols unclaimed', () => {
+  it('selects the executor registered for each queued streaming protocol', () => {
     expect(findTaskExecutor('hls')?.kind).toBe('hls');
-    expect(findTaskExecutor('dash')).toBeUndefined();
+    expect(findTaskExecutor('dash')?.kind).toBe('dash');
+    expect(findTaskExecutor('progressive')).toBeUndefined();
   });
 
   it('rejects overlapping protocol executors', () => {

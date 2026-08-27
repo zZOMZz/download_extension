@@ -16,13 +16,13 @@ import {
 } from '../../core/hls/media-bundle';
 import { createHlsOutputPlan, type HlsOutputPlan } from '../../core/hls/output-plan';
 import {
-  checkpointMatchesDirectory,
   hlsPlaylistFingerprint,
   reconcileCheckpointFile,
 } from '../../core/hls/resume';
 import { safeFilename } from '../../core/format';
+import { checkpointMatchesDirectory } from '../../core/task-checkpoint';
 import { resetTaskState } from '../../core/task-state';
-import type { DownloadCheckpoint, DownloadTask } from '../../shared/download-task';
+import type { DownloadTask, HlsDownloadCheckpoint } from '../../shared/download-task';
 import { diagnosticResource } from '../../shared/task-diagnostics';
 import type { ProtocolTaskExecutor, TaskExecutorContext } from './types';
 
@@ -50,7 +50,7 @@ function shouldRecordCheckpoint(completedSegments: number, totalSegments: number
 
 async function finalizePartialOutput(
   context: TaskExecutorContext,
-  checkpoint: DownloadCheckpoint,
+  checkpoint: HlsDownloadCheckpoint,
   details: HlsOutputDetails,
 ): Promise<void> {
   const partial = await readDirectoryFile(context.directory, checkpoint.partialFilename);
@@ -129,7 +129,10 @@ export const hlsTaskExecutor: ProtocolTaskExecutor = {
       if (!details.resumableTs) throw new Error(context.t('refreshedStreamIncompatible'));
       const fingerprint = hlsPlaylistFingerprint(downloadPlaylist);
       const expectedPartialFilename = partialFilename(details.filename);
-      const existingCheckpoint = task.checkpoint;
+      const existingCheckpoint = task.checkpoint?.version === 1 ? task.checkpoint : undefined;
+      if (task.checkpoint && !existingCheckpoint) {
+        throw new Error(context.t('refreshedStreamIncompatible'));
+      }
       if (existingCheckpoint && !checkpointMatchesDirectory(existingCheckpoint, {
         name: context.directory.name,
         ...(context.directoryHandleId ? { handleId: context.directoryHandleId } : {}),
@@ -154,7 +157,7 @@ export const hlsTaskExecutor: ProtocolTaskExecutor = {
       const reconciled = existingCheckpoint
         ? reconcileCheckpointFile(existingCheckpoint, partial?.size ?? 0)
         : { completedSegments: 0, bytesWritten: 0, segmentEndOffsets: [] };
-      let checkpoint: DownloadCheckpoint = {
+      let checkpoint: HlsDownloadCheckpoint = {
         version: 1,
         playlistFingerprint: fingerprint,
         directoryName: context.directory.name,
@@ -265,7 +268,7 @@ export const hlsTaskExecutor: ProtocolTaskExecutor = {
           : {}),
         requireVideo: true,
       },
-      ...(partialOutputToRemove ? { partialOutputToRemove } : {}),
+      ...(partialOutputToRemove ? { partialOutputsToRemove: [partialOutputToRemove] } : {}),
     };
   },
 };

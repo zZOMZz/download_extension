@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  checkpointMatchesDirectory,
   hlsPlaylistFingerprint,
   reconcileCheckpointFile,
 } from '../src/core/hls/resume';
+import { checkpointMatchesDirectory } from '../src/core/task-checkpoint';
 import { parseHlsPlaylist } from '../src/core/protocols/hls';
-import type { DownloadCheckpoint } from '../src/shared/download-task';
+import type { HlsDownloadCheckpoint } from '../src/shared/download-task';
 
 function playlist(url: string) {
   const parsed = parseHlsPlaylist(`#EXTM3U
@@ -30,7 +30,7 @@ describe('HLS resume metadata', () => {
   });
 
   it('rolls back to the last segment boundary present in the committed file', () => {
-    const checkpoint: DownloadCheckpoint = {
+    const checkpoint: HlsDownloadCheckpoint = {
       version: 1,
       playlistFingerprint: 'test',
       directoryName: 'Downloads',
@@ -51,7 +51,7 @@ describe('HLS resume metadata', () => {
   });
 
   it('uses the persisted handle identity for new checkpoints and folder names for legacy checkpoints', () => {
-    const checkpoint: DownloadCheckpoint = {
+    const checkpoint: HlsDownloadCheckpoint = {
       version: 1,
       playlistFingerprint: 'test',
       directoryName: 'Downloads',

@@ -191,7 +191,7 @@ describe('media output validation', () => {
       invalid.directory,
       'episode.mp4',
       { format: 'mp4' },
-      'episode.part.ts',
+      ['episode.part.ts'],
     )).rejects.toBeInstanceOf(OutputValidationError);
     expect(invalid.files.has('episode.part.ts')).toBe(true);
     expect(invalid.removed).toEqual([]);
@@ -199,14 +199,16 @@ describe('media output validation', () => {
     const valid = fakeDirectory({
       'episode.mp4': validMp4,
       'episode.part.ts': new Blob([new Uint8Array(2_000)]),
+      'episode.audio.part.m4s': new Blob([new Uint8Array(1_000)]),
     });
     await commitValidatedDirectoryOutput(
       valid.directory,
       'episode.mp4',
       { format: 'mp4' },
-      'episode.part.ts',
+      ['episode.part.ts', 'episode.audio.part.m4s'],
     );
     expect(valid.files.has('episode.part.ts')).toBe(false);
-    expect(valid.removed).toEqual(['episode.part.ts']);
+    expect(valid.files.has('episode.audio.part.m4s')).toBe(false);
+    expect(valid.removed).toEqual(['episode.part.ts', 'episode.audio.part.m4s']);
   });
 });

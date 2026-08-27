@@ -34,7 +34,7 @@ export const downloadTaskProgressSchema = z.object({
   lastSegmentDurationMs: z.number().nonnegative().optional(),
 });
 
-export const downloadCheckpointSchema = z.object({
+export const hlsDownloadCheckpointSchema = z.object({
   version: z.literal(1),
   playlistFingerprint: z.string().min(1),
   directoryName: z.string().min(1),
@@ -47,6 +47,39 @@ export const downloadCheckpointSchema = z.object({
   segmentEndOffsets: z.array(z.number().int().nonnegative()),
   updatedAt: z.number().int().nonnegative(),
 });
+
+export const dashTrackCheckpointSchema = z.object({
+  trackId: z.string().min(1),
+  fingerprint: z.string().min(1),
+  partialFilename: z.string().min(1),
+  initializationBytes: z.number().int().nonnegative(),
+  completedSegments: z.number().int().nonnegative(),
+  totalSegments: z.number().int().positive(),
+  bytesWritten: z.number().int().nonnegative(),
+  segmentEndOffsets: z.array(z.number().int().nonnegative()),
+});
+
+export const dashDownloadCheckpointSchema = z.object({
+  version: z.literal(2),
+  protocol: z.literal('dash'),
+  planFingerprint: z.string().min(1),
+  directoryName: z.string().min(1),
+  directoryHandleId: z.string().min(1).optional(),
+  finalFilename: z.string().min(1),
+  completedSegments: z.number().int().nonnegative(),
+  totalSegments: z.number().int().positive(),
+  bytesWritten: z.number().int().nonnegative(),
+  tracks: z.object({
+    video: dashTrackCheckpointSchema,
+    audio: dashTrackCheckpointSchema,
+  }),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export const downloadCheckpointSchema = z.discriminatedUnion('version', [
+  hlsDownloadCheckpointSchema,
+  dashDownloadCheckpointSchema,
+]);
 
 export const downloadTaskSchema = z.object({
   id: z.string().min(1),
@@ -66,4 +99,7 @@ export const downloadTaskSchema = z.object({
 export type DownloadTask = z.infer<typeof downloadTaskSchema>;
 export type DownloadTaskStatus = z.infer<typeof downloadTaskStatusSchema>;
 export type DownloadTaskProgress = z.infer<typeof downloadTaskProgressSchema>;
+export type HlsDownloadCheckpoint = z.infer<typeof hlsDownloadCheckpointSchema>;
+export type DashTrackCheckpoint = z.infer<typeof dashTrackCheckpointSchema>;
+export type DashDownloadCheckpoint = z.infer<typeof dashDownloadCheckpointSchema>;
 export type DownloadCheckpoint = z.infer<typeof downloadCheckpointSchema>;
