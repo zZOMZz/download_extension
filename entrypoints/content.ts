@@ -1,6 +1,9 @@
 import { browser } from 'wxt/browser';
 import { classifyMediaResource } from '~/src/core/detection/classify-media';
-import { detectAdapterMedia } from '~/src/core/detection/adapters/registry';
+import {
+  detectAdapterMedia,
+  detectionAdapterOwnsResource,
+} from '~/src/core/detection/adapters/registry';
 import { discoverMediaItems } from '~/src/core/discovery/registry';
 import { pageDiscoveryRequestSchema } from '~/src/shared/discovery';
 import type { CandidateObservation } from '~/src/shared/media';
@@ -20,6 +23,12 @@ function reportObservation(candidate: CandidateObservation): void {
 function report(rawUrl: string, source: CandidateObservation['source'], mimeType?: string): void {
   const url = rawUrl.trim();
   if (!url) return;
+
+  try {
+    if (detectionAdapterOwnsResource(new URL(url), new URL(location.href))) return;
+  } catch {
+    // Invalid resources are ignored by the generic classifier below as well.
+  }
 
   const kind = classifyMediaResource(url, mimeType, { includeSegments: source === 'dom' });
   if (!kind) return;
@@ -130,6 +139,7 @@ export default defineContentScript({
 
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) report(entry.name, 'performance');
+        scanDetectionAdapters();
       }).observe({ type: 'resource', buffered: true });
     };
 

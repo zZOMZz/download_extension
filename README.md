@@ -29,6 +29,7 @@ pnpm build
 - Resolve external HLS audio renditions and merge separate audio/video playlists into one MP4.
 - Download static, non-DRM DASH MP4 tracks described by `SegmentTemplate`, `SegmentList`, or single-file `SegmentBase`/SIDX, then losslessly merge separate video and audio into one indexed MP4.
 - Detect Bilibili's page-embedded `window.__playinfo__` DASH metadata through an isolated site adapter.
+- Detect MP4 DASH tracks on YouTube watch pages by combining player metadata with the signed Google Video URLs already requested by the active player.
 - Discover Bilibili multi-P videos and UGC collections, flatten every page into a queued DASH task, and resolve signed tracks on demand.
 - Choose a persistent HLS output format; MP4 is the default.
 - Download MPEG-TS HLS into a resumable `.part.ts`, then losslessly remux H.264/AAC streams to a finalized, indexed MP4.
@@ -73,6 +74,15 @@ to the active downloader or manager tab and Bilibili API/CDN domains; closing
 that tab removes the rule. Exact-range responses are required for single-file DASH so a server
 that ignores `Range` cannot make the extension buffer the entire source file in
 memory.
+
+The YouTube detection adapter is limited to individual watch pages. It reads
+the current non-DRM MP4 track metadata from the page player and waits until
+playback exposes signed `googlevideo.com` video and audio URLs, then hands the
+tracks to the generic DASH pipeline. A YouTube-only main-world bridge keeps the
+metadata current across same-page navigation; request-header rules are scoped
+to the generated downloader tab and Google Video domains. The adapter does not
+implement signature deciphering, DRM bypass, playlist discovery, or background
+account access. If no candidate appears, start playback and reopen the popup.
 
 ## HLS site adapters
 

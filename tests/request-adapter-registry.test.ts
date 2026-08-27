@@ -25,7 +25,7 @@ describe('request adapter registry', () => {
 
     expect(updateSessionRules).toHaveBeenCalledOnce();
     expect(updateSessionRules).toHaveBeenCalledWith({
-      removeRuleIds: [10_000_042],
+      removeRuleIds: [10_000_042, 110_000_042],
       addRules: [expect.objectContaining({
         id: 10_000_042,
         condition: expect.objectContaining({ tabIds: [42] }),
@@ -38,11 +38,11 @@ describe('request adapter registry', () => {
     await removeSiteRequestAdapterForTab(42);
 
     expect(updateSessionRules).toHaveBeenNthCalledWith(1, {
-      removeRuleIds: [10_000_042],
+      removeRuleIds: [10_000_042, 110_000_042],
       addRules: [],
     });
     expect(updateSessionRules).toHaveBeenNthCalledWith(2, {
-      removeRuleIds: [10_000_042],
+      removeRuleIds: [10_000_042, 110_000_042],
     });
   });
 });

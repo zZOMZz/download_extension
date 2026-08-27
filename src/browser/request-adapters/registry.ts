@@ -1,12 +1,14 @@
 import { browser } from 'wxt/browser';
 import type { MediaCandidate } from '../../shared/media';
 import { bilibiliRequestAdapter } from './bilibili';
+import { youtubeRequestAdapter } from './youtube';
 import type { SiteRequestAdapter } from './types';
 
 const RULE_ID_OFFSET = 10_000_000;
 
 export const SITE_REQUEST_ADAPTERS: readonly SiteRequestAdapter[] = Object.freeze([
   bilibiliRequestAdapter,
+  youtubeRequestAdapter,
 ]);
 
 function ruleIdForTab(tabId: number, adapterIndex = 0): number {

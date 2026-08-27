@@ -1,5 +1,6 @@
 import { browser } from 'wxt/browser';
 import { classifyMediaResource, isHttpUrl } from '~/src/core/detection/classify-media';
+import { detectionAdapterOwnsResource } from '~/src/core/detection/adapters/registry';
 import {
   clearCandidates,
   findCandidate,
@@ -48,6 +49,14 @@ export default defineBackground(() => {
   browser.webRequest.onHeadersReceived.addListener(
     (details) => {
       if (details.tabId < 0) return;
+
+      if (details.initiator) {
+        try {
+          if (detectionAdapterOwnsResource(new URL(details.url), new URL(details.initiator))) return;
+        } catch {
+          // Continue with generic detection when either URL is unavailable or invalid.
+        }
+      }
 
       const mimeType = responseHeader(details.responseHeaders, 'content-type');
       const kind = classifyMediaResource(details.url, mimeType, {
