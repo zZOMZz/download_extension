@@ -4,6 +4,7 @@ import type { SabrFormat } from 'googlevideo/shared-types';
 import type { YouTubeSabrSource } from '../../../shared/media';
 import type { HlsDownloadProgress, RandomAccessBinaryWriter } from '../../hls/download-hls';
 import { FlatMp4Muxer } from '../../mp4/flat-mp4-muxer';
+import { browserTransport, type Transport } from '../../network/transport';
 
 export interface YouTubeSabrDownloadContext {
   serverAbrStreamingUrl: string;
@@ -13,6 +14,7 @@ export interface YouTubeSabrDownloadContext {
 }
 
 export interface YouTubeSabrDownloadOptions {
+  transport?: Transport;
   videoItag: number;
   audioItag: number;
   signal?: AbortSignal;
@@ -228,8 +230,8 @@ export async function downloadYouTubeSabr(
         request.streamerContext = { sabrContexts: [], unsentSabrContexts: [], ...request.streamerContext, poToken: refreshedToken };
         bodyBytes = VideoPlaybackAbrRequest.encode(request).finish();
       }
-      const response = await fetch(input, {
-        ...init, ...(bodyBytes === undefined ? {} : { body: bodyBytes }), credentials: 'include', redirect: 'error',
+      const response = await (options.transport ?? browserTransport).fetch(input, {
+        ...init, ...(bodyBytes === undefined ? {} : { body: bodyBytes }), redirect: 'error',
         signal: init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal,
       });
       check();

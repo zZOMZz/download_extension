@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.runtime.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "./src",
+    "outDir": "./.output/runtime/types"
+  },
+  "include": ["src/runtime/index.ts", "src/hosts/node/index.ts", "src/types/mux-js.d.ts"]
+}

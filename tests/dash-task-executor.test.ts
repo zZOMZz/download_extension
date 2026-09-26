@@ -1,4 +1,3 @@
-// @ts-expect-error Vitest runs in Node; the browser extension intentionally does not include Node typings.
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import muxjs from 'mux.js';
@@ -7,9 +6,9 @@ import type {
   WritableFileHandle,
 } from '../src/browser/directory-output-writer';
 import type { PositionalWritableFileStream } from '../src/browser/random-access-file-writer';
-import { dashTaskExecutor } from '../src/browser/task-executors/dash';
-import { commitValidatedDirectoryOutput } from '../src/browser/validated-output';
-import { createTranslator } from '../src/shared/i18n';
+import { dashTaskExecutor } from '../src/runtime/task-executors/dash';
+import { validateDirectoryOutput } from '../src/browser/validated-output';
+import { browserTransformBackend, createBrowserArtifactStore } from '../src/browser/runtime-adapters';
 import type { DownloadTask } from '../src/shared/download-task';
 import type { DashMediaSource } from '../src/shared/media';
 import { NETWORK_PRESETS } from '../src/shared/settings';
@@ -91,7 +90,7 @@ beforeAll(async () => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('DASH task executor', () => {
-  it('refreshes an expired URL, resumes both tracks, and removes partials after validation', async () => {
+  it('refreshes an expired URL using host transport and leaves cleanup to task commit', async () => {
     const resources = new Map<string, Uint8Array>([
       ['https://cdn.example/video-init?token=old', video.init],
       ['https://cdn.example/video-1?token=old', video.data],
@@ -148,6 +147,8 @@ describe('DASH task executor', () => {
     const events: Array<{ code: string; details?: unknown }> = [];
     let refreshCalls = 0;
     const { directory, files } = memoryDirectory();
+    const transport = { fetch };
+    vi.stubGlobal('fetch', () => { throw new Error('Unexpected global network access'); });
     const result = await dashTaskExecutor.execute({
       task,
       media: {
@@ -156,8 +157,9 @@ describe('DASH task executor', () => {
         title: 'Episode 1',
         dash: dash('old'),
       },
-      directory,
-      directoryHandleId: 'directory-1',
+      artifacts: createBrowserArtifactStore(directory, 'directory-1'),
+      transforms: browserTransformBackend,
+      transport,
       signal: new AbortController().signal,
       networkPolicy: { maxAttempts: 1 },
       networkSettings: NETWORK_PRESETS.resilient,
@@ -181,7 +183,6 @@ describe('DASH task executor', () => {
         events.push({ code, ...(details ? { details } : {}) });
       },
       recordRequestRetry: () => {},
-      t: createTranslator('en'),
     });
 
     expect(requests).toEqual([
@@ -213,15 +214,14 @@ describe('DASH task executor', () => {
       'Series - Episode 1.video.part.m4s',
       'Series - Episode 1.audio.part.m4s',
     ]);
-    const validation = await commitValidatedDirectoryOutput(
+    const validation = await validateDirectoryOutput(
       directory,
       result.finalFilename,
       result.validationOptions,
-      result.partialOutputsToRemove,
     );
     expect(validation).toMatchObject({ videoTracks: 1, audioTracks: 1, fragmented: false });
     expect(files.has('Series - Episode 1.mp4')).toBe(true);
-    expect(files.has('Series - Episode 1.video.part.m4s')).toBe(false);
-    expect(files.has('Series - Episode 1.audio.part.m4s')).toBe(false);
+    expect(files.has('Series - Episode 1.video.part.m4s')).toBe(true);
+    expect(files.has('Series - Episode 1.audio.part.m4s')).toBe(true);
   });
 });

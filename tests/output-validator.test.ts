@@ -1,8 +1,7 @@
-// @ts-expect-error Vitest runs in Node; the browser extension intentionally does not include Node typings.
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import muxjs from 'mux.js';
-import { commitValidatedDirectoryOutput } from '../src/browser/validated-output';
+import { validateDirectoryOutput } from '../src/browser/validated-output';
 import type {
   WritableDirectoryHandle,
   WritableFileHandle,
@@ -182,16 +181,37 @@ describe('media output validation', () => {
     })).rejects.toMatchObject({ code: 'size-mismatch' });
   });
 
-  it('keeps the resumable partial file until final output validation succeeds', async () => {
+  it('validates through bounded reads without loading the complete media output', async () => {
+    const reads: Array<{ offset: number; length: number }> = [];
+    const result = await validateMediaOutput({
+      size: validMp4.size,
+      read: async (offset, length) => {
+        reads.push({ offset, length });
+        return new Uint8Array(await validMp4.slice(offset, offset + length).arrayBuffer());
+      },
+    }, { format: 'mp4' });
+    expect(result.videoTracks).toBe(1);
+    expect(reads.length).toBeGreaterThan(1);
+    expect(Math.max(...reads.map(({ length }) => length))).toBeLessThan(validMp4.size);
+    expect(reads.every(({ offset, length }) => offset >= 0 && offset + length <= validMp4.size)).toBe(true);
+  });
+
+  it('rejects a short host read even when reported size is valid', async () => {
+    await expect(validateMediaOutput({
+      size: validMp4.size,
+      read: async () => new Uint8Array(1),
+    }, { format: 'mp4' })).rejects.toMatchObject({ code: 'size-mismatch' });
+  });
+
+  it('leaves recovery artifacts intact regardless of the validation result', async () => {
     const invalid = fakeDirectory({
       'episode.mp4': new Blob([new Uint8Array(2_000)]),
       'episode.part.ts': new Blob([new Uint8Array(2_000)]),
     });
-    await expect(commitValidatedDirectoryOutput(
+    await expect(validateDirectoryOutput(
       invalid.directory,
       'episode.mp4',
       { format: 'mp4' },
-      ['episode.part.ts'],
     )).rejects.toBeInstanceOf(OutputValidationError);
     expect(invalid.files.has('episode.part.ts')).toBe(true);
     expect(invalid.removed).toEqual([]);
@@ -201,14 +221,13 @@ describe('media output validation', () => {
       'episode.part.ts': new Blob([new Uint8Array(2_000)]),
       'episode.audio.part.m4s': new Blob([new Uint8Array(1_000)]),
     });
-    await commitValidatedDirectoryOutput(
+    await validateDirectoryOutput(
       valid.directory,
       'episode.mp4',
       { format: 'mp4' },
-      ['episode.part.ts', 'episode.audio.part.m4s'],
     );
-    expect(valid.files.has('episode.part.ts')).toBe(false);
-    expect(valid.files.has('episode.audio.part.m4s')).toBe(false);
-    expect(valid.removed).toEqual(['episode.part.ts', 'episode.audio.part.m4s']);
+    expect(valid.files.has('episode.part.ts')).toBe(true);
+    expect(valid.files.has('episode.audio.part.m4s')).toBe(true);
+    expect(valid.removed).toEqual([]);
   });
 });

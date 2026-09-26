@@ -1,4 +1,4 @@
-import type { DiscoveredMediaItem } from '~/src/shared/discovery';
+import type { DiscoveredMediaItem } from '../../shared/discovery';
 import { bilibiliDiscoveryAdapter } from './adapters/bilibili';
 import { twoRkDiscoveryAdapter } from './adapters/two-rk';
 import type {

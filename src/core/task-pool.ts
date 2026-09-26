@@ -38,6 +38,9 @@ export async function runTaskPool<Item, Result>({
   };
 
   const workerCount = Math.min(concurrency, items.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  // A failed worker must not release the caller's execution lock while peers still write.
+  const settled = await Promise.allSettled(Array.from({ length: workerCount }, () => worker()));
+  const failed = settled.find((result) => result.status === 'rejected');
+  if (failed?.status === 'rejected') throw failed.reason;
   return results.sort((left, right) => left.index - right.index);
 }

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DiscoveredMediaItem } from '../src/shared/discovery';
+import { DOWNLOAD_TASKS_STORAGE_KEY } from '../src/shared/download-task';
 
 const storage = vi.hoisted(() => new Map<string, unknown>());
 
@@ -146,4 +147,39 @@ describe('persistent download task repository', () => {
       },
     });
   });
+
+  it('rejects corrupt persisted state without replacing the existing queue', async () => {
+    const [valid] = await addDownloadTasks([item(1)], 'mp4');
+    const corrupted = [valid, { ...valid, id: 'corrupt-task', status: 'unknown-state' }];
+    storage.set(DOWNLOAD_TASKS_STORAGE_KEY, corrupted);
+    const snapshot = structuredClone(corrupted);
+
+    await expect(listDownloadTasks()).rejects.toThrow();
+    await expect(addDownloadTasks([item(2)], 'mp4')).rejects.toThrow();
+    await expect(clearCompletedDownloadTasks()).rejects.toThrow();
+    expect(storage.get(DOWNLOAD_TASKS_STORAGE_KEY)).toEqual(snapshot);
+
+    // A failed read must not poison the serialization queue after explicit repair.
+    storage.set(DOWNLOAD_TASKS_STORAGE_KEY, [valid]);
+    expect(await addDownloadTasks([item(2)], 'mp4')).toHaveLength(2);
+  });
+
+  it('rejects capacity overflow atomically instead of dropping older tasks', async () => {
+    const items = Array.from({ length: 999 }, (_, index) => item(index));
+    const added = await addDownloadTasks(items, 'mp4');
+    await replaceDownloadTask({ ...added[0]!, status: 'downloading' });
+    const before = await listDownloadTasks();
+
+    await expect(addDownloadTasks([item(999), item(1000)], 'mp4')).rejects.toThrow(/queue is full/i);
+    expect(await listDownloadTasks()).toEqual(before);
+    expect(storage.get(DOWNLOAD_TASKS_STORAGE_KEY)).toEqual(before);
+
+    const full = await addDownloadTasks([item(999)], 'mp4');
+    expect(full).toHaveLength(1000);
+    expect(full[0]).toMatchObject({ id: added[0]!.id, status: 'downloading' });
+    expect(await addDownloadTasks([item(0), item(999)], 'mp4')).toEqual(full);
+    await expect(addDownloadTasks([item(1000)], 'mp4')).rejects.toThrow(/queue is full/i);
+    expect(await listDownloadTasks()).toEqual(full);
+  });
+
 });

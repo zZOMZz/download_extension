@@ -1,5 +1,18 @@
 export type MediaOutputFormat = 'mp4' | 'ts';
 
+/** A bounded reader; validation never needs to buffer the complete output. */
+export interface RandomAccessMedia {
+  readonly size: number;
+  read(offset: number, length: number): Promise<Uint8Array>;
+}
+
+export function blobMediaReader(blob: Blob): RandomAccessMedia {
+  return {
+    size: blob.size,
+    read: async (offset, length) => new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer()),
+  };
+}
+
 export type OutputValidationErrorCode =
   | 'missing-output'
   | 'empty-output'
@@ -51,15 +64,19 @@ function fail(code: OutputValidationErrorCode, message: string, cause?: unknown)
   throw new OutputValidationError(code, message, cause === undefined ? undefined : { cause });
 }
 
-async function readBytes(blob: Blob, start: number, length: number): Promise<Uint8Array> {
-  return new Uint8Array(await blob.slice(start, start + length).arrayBuffer());
+async function readBytes(blob: RandomAccessMedia, start: number, length: number): Promise<Uint8Array> {
+  const bytes = await blob.read(start, length);
+  if (bytes.byteLength !== length) {
+    fail('size-mismatch', `The output returned ${bytes.byteLength} bytes for a ${length}-byte read at ${start}.`);
+  }
+  return bytes;
 }
 
 function ascii(bytes: Uint8Array, start: number, length: number): string {
   return String.fromCharCode(...bytes.subarray(start, start + length));
 }
 
-async function readMp4Box(blob: Blob, offset: number, parentEnd: number): Promise<Mp4Box> {
+async function readMp4Box(blob: RandomAccessMedia, offset: number, parentEnd: number): Promise<Mp4Box> {
   if (parentEnd - offset < 8) {
     fail('invalid-mp4', `The MP4 output has an incomplete box header at byte ${offset}.`);
   }
@@ -95,7 +112,7 @@ async function readMp4Box(blob: Blob, offset: number, parentEnd: number): Promis
   };
 }
 
-async function listMp4Boxes(blob: Blob, start: number, end: number): Promise<Mp4Box[]> {
+async function listMp4Boxes(blob: RandomAccessMedia, start: number, end: number): Promise<Mp4Box[]> {
   const boxes: Mp4Box[] = [];
   let offset = start;
   while (offset < end) {
@@ -110,7 +127,7 @@ async function listMp4Boxes(blob: Blob, start: number, end: number): Promise<Mp4
   return boxes;
 }
 
-async function movieDurationSeconds(blob: Blob, movie: Mp4Box): Promise<number | undefined> {
+async function movieDurationSeconds(blob: RandomAccessMedia, movie: Mp4Box): Promise<number | undefined> {
   const children = await listMp4Boxes(blob, movie.contentStart, movie.end);
   const header = children.find(({ type }) => type === 'mvhd');
   if (!header) return undefined;
@@ -130,7 +147,7 @@ async function movieDurationSeconds(blob: Blob, movie: Mp4Box): Promise<number |
   return undefined;
 }
 
-async function movieTrackTypes(blob: Blob, movie: Mp4Box): Promise<string[]> {
+async function movieTrackTypes(blob: RandomAccessMedia, movie: Mp4Box): Promise<string[]> {
   const children = await listMp4Boxes(blob, movie.contentStart, movie.end);
   const result: string[] = [];
   for (const track of children.filter(({ type }) => type === 'trak')) {
@@ -146,7 +163,7 @@ async function movieTrackTypes(blob: Blob, movie: Mp4Box): Promise<string[]> {
   return result;
 }
 
-async function validateMp4(blob: Blob, requireVideo: boolean): Promise<OutputValidationResult> {
+async function validateMp4(blob: RandomAccessMedia, requireVideo: boolean): Promise<OutputValidationResult> {
   let topLevel: Mp4Box[];
   try {
     topLevel = await listMp4Boxes(blob, 0, blob.size);
@@ -199,7 +216,7 @@ function hasTransportStreamSync(bytes: Uint8Array): boolean {
   return false;
 }
 
-async function validateTransportStream(blob: Blob): Promise<OutputValidationResult> {
+async function validateTransportStream(blob: RandomAccessMedia): Promise<OutputValidationResult> {
   const bytes = await readBytes(blob, 0, Math.min(TS_SCAN_BYTES, blob.size));
   if (!hasTransportStreamSync(bytes)) {
     fail('invalid-transport-stream', 'The transport-stream output does not contain a valid packet sync pattern.');
@@ -208,10 +225,11 @@ async function validateTransportStream(blob: Blob): Promise<OutputValidationResu
 }
 
 export async function validateMediaOutput(
-  blob: Blob | null,
+  output: RandomAccessMedia | Blob | null,
   options: OutputValidationOptions,
 ): Promise<OutputValidationResult> {
-  if (!blob) fail('missing-output', 'The final output file is missing.');
+  if (!output) fail('missing-output', 'The final output file is missing.');
+  const blob = 'read' in output ? output : blobMediaReader(output);
   if (blob.size === 0) fail('empty-output', 'The final output file is empty.');
   if (options.expectedBytes !== undefined && blob.size !== options.expectedBytes) {
     fail(

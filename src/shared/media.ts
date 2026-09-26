@@ -187,9 +187,6 @@ export const runtimeRequestSchema = z.discriminatedUnion('type', [
     taskId: z.string().min(1),
   }),
   z.object({
-    type: z.literal('task:clear-completed'),
-  }),
-  z.object({
     type: z.literal('task:diagnostic:add'),
     event: taskDiagnosticEventSchema,
   }),

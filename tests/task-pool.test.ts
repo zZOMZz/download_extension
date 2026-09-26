@@ -41,6 +41,33 @@ describe('task pool', () => {
     expect(results).toEqual([{ index: 0, value: 0 }]);
   });
 
+  it('waits for active peers before rejecting a failed worker', async () => {
+    let releasePeer!: () => void;
+    const peer = new Promise<void>((resolve) => { releasePeer = resolve; });
+    const failure = new Error('One worker failed');
+    let peerFinished = false;
+    let settled = false;
+    const pending = runTaskPool({
+      items: [0, 1], concurrency: 2,
+      run: async (value) => {
+        if (value === 0) throw failure;
+        await peer;
+        peerFinished = true;
+        return value;
+      },
+    }).then(
+      () => { settled = true; return undefined; },
+      (error: unknown) => { settled = true; return error; },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(peerFinished).toBe(false);
+    releasePeer();
+    expect(await pending).toBe(failure);
+    expect(peerFinished).toBe(true);
+  });
+
   it('rejects invalid concurrency values', async () => {
     await expect(runTaskPool({ items: [1], concurrency: 0, run: async (value) => value })).rejects.toThrow(
       'positive integer',

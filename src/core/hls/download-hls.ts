@@ -1,7 +1,8 @@
-import type { HlsByteRange, HlsKey, HlsMap, HlsMediaPlaylist } from '~/src/core/protocols/hls';
-import type { DownloadTaskProgress } from '~/src/shared/download-task';
-import type { NetworkRequestCoordinator } from '~/src/core/network/host-health';
+import type { HlsByteRange, HlsKey, HlsMap, HlsMediaPlaylist } from '../protocols/hls';
+import type { DownloadTaskProgress } from '../../shared/download-task';
+import type { NetworkRequestCoordinator } from '../network/host-health';
 import { resolveHlsAes128Key } from './key-resolver';
+import { browserTransport, type Transport } from '../network/transport';
 
 export interface BinaryWriter {
   write(chunk: Uint8Array): Promise<void>;
@@ -23,6 +24,7 @@ export interface HlsNetworkPolicy {
 }
 
 export interface HlsDownloadOptions {
+  transport?: Transport;
   signal?: AbortSignal;
   onProgress?: (progress: HlsDownloadProgress) => void;
   onSegmentComplete?: (progress: HlsDownloadProgress) => void | Promise<void>;
@@ -76,6 +78,7 @@ export function isRecoverableNetworkError(error: unknown): boolean {
 }
 
 interface ResolvedNetworkPolicy {
+  transport: Transport;
   maxAttempts: number;
   firstByteTimeoutMs: number;
   idleTimeoutMs: number;
@@ -107,6 +110,7 @@ export interface FetchBytesCallbacks {
 }
 
 const DEFAULT_NETWORK_POLICY: ResolvedNetworkPolicy = {
+  transport: browserTransport,
   maxAttempts: 4,
   firstByteTimeoutMs: 15_000,
   idleTimeoutMs: 20_000,
@@ -133,8 +137,12 @@ function rangeHeader(range: HlsByteRange): HeadersInit {
   return { Range: `bytes=${range.offset}-${range.offset + range.length - 1}` };
 }
 
-function networkPolicy(options: HlsNetworkPolicy | undefined): ResolvedNetworkPolicy {
+function networkPolicy(
+  options: HlsNetworkPolicy | undefined,
+  transport: Transport = browserTransport,
+): ResolvedNetworkPolicy {
   return {
+    transport,
     maxAttempts: Math.max(1, Math.floor(options?.maxAttempts ?? DEFAULT_NETWORK_POLICY.maxAttempts)),
     firstByteTimeoutMs: Math.max(1, options?.firstByteTimeoutMs ?? DEFAULT_NETWORK_POLICY.firstByteTimeoutMs),
     idleTimeoutMs: Math.max(1, options?.idleTimeoutMs ?? DEFAULT_NETWORK_POLICY.idleTimeoutMs),
@@ -299,8 +307,7 @@ async function fetchBytes(
     try {
       const request = async () => {
         const response = await withTimeout(
-          fetch(url, {
-            credentials: 'include',
+          policy.transport.fetch(url, {
             ...(range ? { headers: rangeHeader(range) } : {}),
             signal: controller.signal,
           }),
@@ -365,8 +372,9 @@ export async function fetchBinaryResource(
   callbacks: FetchBytesCallbacks = {},
   resourceKind: Exclude<NetworkResourceKind, 'text'> = 'media-segment',
   requireExactRange = false,
+  transport: Transport = browserTransport,
 ): Promise<Uint8Array> {
-  return fetchBytes(url, range, signal, networkPolicy(policyOptions), callbacks, resourceKind, requireExactRange);
+  return fetchBytes(url, range, signal, networkPolicy(policyOptions, transport), callbacks, resourceKind, requireExactRange);
 }
 
 export async function fetchTextResource(
@@ -374,8 +382,9 @@ export async function fetchTextResource(
   signal?: AbortSignal,
   policyOptions?: HlsNetworkPolicy,
   callbacks: { onRetry?: (event: NetworkRetryEvent) => void } = {},
+  transport: Transport = browserTransport,
 ): Promise<string> {
-  const policy = networkPolicy(policyOptions);
+  const policy = networkPolicy(policyOptions, transport);
   let lastError: unknown;
   let attemptsUsed = 0;
   for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
@@ -387,7 +396,7 @@ export async function fetchTextResource(
     try {
       const request = async () => {
         const response = await withTimeout(
-          fetch(url, { credentials: 'include', signal: controller.signal }),
+          policy.transport.fetch(url, { signal: controller.signal }),
           policy.firstByteTimeoutMs,
           () => new NetworkTimeoutError(`The server did not respond within ${Math.round(policy.firstByteTimeoutMs / 1_000)} seconds.`),
           controller,
@@ -539,7 +548,7 @@ export async function downloadHlsPlaylist(
   const problems = validateHlsDownload(playlist);
   if (problems.length > 0) throw new Error(problems.join(' '));
 
-  const policy = networkPolicy(options.networkPolicy);
+  const policy = networkPolicy(options.networkPolicy, options.transport);
   const startSegmentIndex = options.startSegmentIndex ?? 0;
   const initialBytesWritten = options.initialBytesWritten ?? 0;
   if (!Number.isInteger(startSegmentIndex) || startSegmentIndex < 0 || startSegmentIndex > playlist.segments.length) {
@@ -592,7 +601,7 @@ export async function downloadHlsPlaylist(
       resolveHlsAes128Key({
         downloadedBytes,
         keyUri: key.uri,
-        loadText: options.loadText ?? ((url, signal) => fetchTextResource(url, signal, policy)),
+        loadText: options.loadText ?? ((url, signal) => fetchTextResource(url, signal, policy, {}, policy.transport)),
         ...(options.signal ? { signal: options.signal } : {}),
       }),
     );

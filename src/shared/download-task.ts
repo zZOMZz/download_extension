@@ -90,6 +90,17 @@ export const downloadTaskSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
   progress: downloadTaskProgressSchema.optional(),
   checkpoint: downloadCheckpointSchema.optional(),
+  outputCommit: z.object({
+    directoryName: z.string().min(1),
+    directoryHandleId: z.string().min(1).optional(),
+    finalFilename: z.string().min(1),
+    validationOptions: z.object({
+      format: z.enum(['mp4', 'ts']),
+      expectedBytes: z.number().nonnegative().optional(),
+      requireVideo: z.boolean().optional(),
+    }),
+    partialFilenames: z.array(z.string().min(1)),
+  }).optional(),
   recoveryAttempt: z.number().int().nonnegative().optional(),
   nextRetryAt: z.number().int().nonnegative().optional(),
   error: z.string().optional(),

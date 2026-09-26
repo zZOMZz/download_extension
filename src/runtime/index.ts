@@ -1,0 +1,24 @@
+/** Portable entry point. Hosts supply I/O, execution ownership and source-session capabilities. */
+export { DownloadRuntime } from './download-runtime';
+export type { DownloadRuntimeOptions, TaskStore, ExecutionLocks, RuntimeSnapshot } from './download-runtime';
+export type { ArtifactStore } from './artifact-store';
+export { readMediaArtifact } from './artifact-store';
+export type { TransformBackend } from './transform-backend';
+export { RuntimeError } from './errors';
+export type { RuntimeErrorCode } from './errors';
+export { PROTOCOL_TASK_EXECUTORS, findTaskExecutor } from './task-executors/registry';
+export type { ProtocolTaskExecutor, TaskExecutorContext, TaskExecutorResult } from './task-executors/types';
+export type { Transport } from '../core/network/transport';
+export type { BinaryWriter, RandomAccessBinaryWriter, HlsNetworkPolicy } from '../core/hls/download-hls';
+export { validateMediaOutput, OutputValidationError } from '../core/media/output-validator';
+export type { RandomAccessMedia, OutputValidationOptions, OutputValidationResult } from '../core/media/output-validator';
+export { parseHlsPlaylist } from '../core/protocols/hls';
+export { parseDashMediaSource } from '../core/protocols/dash';
+export { downloadTaskSchema } from '../shared/download-task';
+export type { DownloadTask, DownloadCheckpoint, DownloadTaskProgress } from '../shared/download-task';
+export type { DiscoveredMediaItem } from '../shared/discovery';
+export type { ResolvedDiscoveredMedia, DiscoveryResolveContext } from '../core/discovery/source';
+export { NETWORK_PRESETS } from '../shared/settings';
+export type { NetworkSettings, OutputFormat } from '../shared/settings';
+export { executeDirectDownload, describeDirectOutput } from './direct-download';
+export type { DirectMediaSelection, DirectDownloadRequest, DirectDownloadOptions, DirectOutputTarget, DirectOutputDescription } from './direct-download';

@@ -17,6 +17,7 @@ export const downloadFailureCategorySchema = z.enum([
 export const downloadFailureSchema = z.object({
   category: downloadFailureCategorySchema,
   code: z.string().min(1),
+  params: z.record(z.string(), z.union([z.string(), z.number()])).optional(),
   message: z.string().min(1),
   recoverable: z.boolean(),
   occurredAt: z.number().int().nonnegative(),
@@ -44,6 +45,7 @@ export const taskDiagnosticEventCodeSchema = z.enum([
   'recovery-scheduled',
   'finalize-started',
   'output-validated',
+  'output-cleanup-pending',
   'task-completed',
   'task-failed',
   'task-cancelled',

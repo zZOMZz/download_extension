@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { isManagerRuntimeSender } from '~/src/background/runtime-access';
 import { classifyMediaResource, isHttpUrl } from '~/src/core/detection/classify-media';
 import { detectionAdapterClaimsResource } from '~/src/core/detection/adapters/registry';
 import {
@@ -9,7 +10,6 @@ import {
 } from '~/src/background/candidate-repository';
 import {
   addDownloadTasks,
-  clearCompletedDownloadTasks,
   listDownloadTasks,
   removeDownloadTask,
   replaceDownloadTask,
@@ -111,6 +111,9 @@ export default defineBackground(() => {
     if (!parsed.success) return undefined;
 
     const request = parsed.data;
+    if (request.type.startsWith('task:') && !isManagerRuntimeSender(
+      sender, browser.runtime.id, browser.runtime.getURL('/manager.html'),
+    )) return { ok: false, error: 'Task storage is only available to the trusted manager runtime.' };
     switch (request.type) {
       case 'youtube-sabr:observe':
         return { ok: await acceptYoutubeSabrBridgeRequest(request, sender, browser.runtime.id) };
@@ -212,14 +215,6 @@ export default defineBackground(() => {
         await removeDownloadTask(request.taskId);
         await removeTaskDiagnosticEvents(request.taskId);
         return { ok: true };
-      case 'task:clear-completed': {
-        const completedTaskIds = (await listDownloadTasks())
-          .filter(({ status }) => status === 'completed')
-          .map(({ id }) => id);
-        await clearCompletedDownloadTasks();
-        await Promise.all(completedTaskIds.map((taskId) => removeTaskDiagnosticEvents(taskId)));
-        return { ok: true };
-      }
       case 'task:diagnostic:add':
         await appendTaskDiagnosticEvent(request.event);
         return { ok: true };

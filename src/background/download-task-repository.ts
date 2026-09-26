@@ -11,8 +11,10 @@ let queue = Promise.resolve();
 
 async function read(): Promise<DownloadTask[]> {
   const stored = await browser.storage.local.get(DOWNLOAD_TASKS_STORAGE_KEY);
-  const parsed = downloadTaskSchema.array().safeParse(stored[DOWNLOAD_TASKS_STORAGE_KEY]);
-  return parsed.success ? parsed.data : [];
+  const value = stored[DOWNLOAD_TASKS_STORAGE_KEY];
+  if (value === undefined) return [];
+  // Invalid persisted state must not silently become an empty queue on the next write.
+  return downloadTaskSchema.array().parse(value);
 }
 
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -51,9 +53,9 @@ export function addDownloadTasks(
       existingSourceIds.add(item.id);
     }
     tasks.sort((left, right) => left.createdAt - right.createdAt);
-    const persisted = tasks.slice(-1000);
-    await write(persisted);
-    return persisted;
+    if (tasks.length > 1000) throw new Error('The task queue is full (1000 tasks). Clear completed tasks before adding more.');
+    await write(tasks);
+    return tasks;
   });
 }
 

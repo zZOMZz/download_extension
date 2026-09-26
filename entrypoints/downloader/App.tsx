@@ -1,32 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { formatBytes, safeFilename } from '~/src/core/format';
+import { formatBytes } from '~/src/core/format';
 import { candidateVideoQualities, selectedVideoQuality, videoQualityLabel } from '~/src/core/media-quality';
 import { ProgressMetrics } from '~/src/components/progress-metrics';
 import { BrandMark } from '~/src/components/brand-mark';
 import { LiquidShader } from '~/src/components/liquid-shader';
 import { parseDashMediaSource } from '~/src/core/protocols/dash';
-import { downloadDashPlan, preferredDashTrack, prepareDashDownload } from '~/src/core/dash/download-dash';
-import { downloadProgressiveMedia } from '~/src/core/progressive/download-progressive';
-import { downloadYouTubeSabr } from '~/src/core/site-adapters/youtube/download-sabr';
+import { preferredDashTrack } from '~/src/core/dash/download-dash';
 import type { HlsRendition, HlsVariant } from '~/src/core/protocols/hls';
 import {
-  downloadHlsPlaylist,
   fetchTextResource,
   validateHlsDownload,
   type HlsDownloadProgress,
-  type RandomAccessBinaryWriter,
 } from '~/src/core/hls/download-hls';
 import { inspectHlsUrl, inspectHlsVariant, type InspectedHls } from '~/src/core/hls/inspect-hls';
-import {
-  combinedHlsMediaPlaylist,
-  hlsPlaylistUsesFmp4,
-} from '~/src/core/hls/media-bundle';
-import { createHlsOutputPlan, type HlsOutputPlan } from '~/src/core/hls/output-plan';
+import { combinedHlsMediaPlaylist, hlsPlaylistUsesFmp4 } from '~/src/core/hls/media-bundle';
 import { configureCandidateRequestAdapter, getYouTubeSabrContext, listTabCandidates } from '~/src/browser/runtime-client';
-import { openOutputWriter } from '~/src/browser/output-writer';
+import { openOutputTarget } from '~/src/browser/output-writer';
+import { describeBrowserDirectOutput, runBrowserDirectDownload } from '~/src/browser/direct-download';
+import type { DirectMediaSelection } from '~/src/runtime/direct-download';
+import { runtimeErrorMessage } from '~/src/browser/runtime-messages';
 import { readSettings, setOutputFormat as persistOutputFormat } from '~/src/browser/settings';
-import { createHlsOutputWriter } from '~/src/browser/hls-output-writer';
-import { SeparateTrackFmp4Writer } from '~/src/browser/separate-track-fmp4-writer';
 import { createTranslator, type Translator } from '~/src/shared/i18n';
 import type { DashMediaSource, DashTrack, MediaCandidate, YouTubeSabrFormat } from '~/src/shared/media';
 import {
@@ -93,26 +86,6 @@ function progressPanel(progress: HlsDownloadProgress | null, t: Translator, trac
       <ProgressMetrics progress={progress} t={t} />
     </div>
   );
-}
-
-interface HlsOutputDetails extends HlsOutputPlan {
-  filename: string;
-  mime: string;
-}
-
-function outputDetails(
-  candidate: MediaCandidate,
-  hls: InspectedHls,
-  outputFormat: OutputFormat,
-): HlsOutputDetails {
-  const plan = createHlsOutputPlan(hls, outputFormat);
-  const height = hls.selectedVariant?.resolution?.height;
-  const base = safeFilename(candidate.title ?? 'video');
-  return {
-    ...plan,
-    filename: `${base}${height ? `-${height}p` : ''}.${plan.extension}`,
-    mime: plan.mimeType,
-  };
 }
 
 export function App() {
@@ -193,7 +166,7 @@ export function App() {
         if (!controller.signal.aborted) setLoading(false);
       }
     })();
-    return () => controller.abort();
+    return () => { controller.abort(); abortController.current?.abort(); };
   }, [candidateId, tabId, requestedVideoTrackId]);
 
   const changeVariant = async (uri: string) => {
@@ -226,157 +199,47 @@ export function App() {
     }
   };
 
-  const startHlsDownload = async () => {
-    if (!candidate || !hls) return;
-    setError(null);
-    setProgress(null);
-    const details = outputDetails(candidate, hls, outputFormat);
-    const downloadPlaylist = combinedHlsMediaPlaylist(hls);
-    try {
-      const destination = await openOutputWriter(
-        details.filename,
-        details.remuxTs ? 'video/mp4' : details.mime,
-        details.extension,
-      );
-      const writer = createHlsOutputWriter(destination, details);
-      const controller = new AbortController();
-      abortController.current = controller;
-      setDownloading(true);
-      setProgress({
-        completedSegments: 0,
-        totalSegments: downloadPlaylist.segments.length,
-        bytesWritten: 0,
-        phase: 'requesting',
-        networkBytesReceived: 0,
-      });
-      await downloadHlsPlaylist(downloadPlaylist, writer, {
-        signal: controller.signal,
-        networkPolicy,
-        loadText,
-        onProgress: setProgress,
-      });
-    } catch (cause) {
-      if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-        setError(cause instanceof Error ? cause.message : t('downloadFailed'));
-      }
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  const startProgressiveDownload = async () => {
-    if (!candidate || candidate.kind !== 'progressive' || candidate.hasContentProtection) return;
-    setError(null);
-    setProgress(null);
-    const controller = new AbortController();
-    abortController.current = controller;
-    setDownloading(true);
-    let destination: RandomAccessBinaryWriter | undefined;
-    try {
-      destination = await openOutputWriter(
-        `${safeFilename(candidate.title ?? 'video')}${candidate.isPreview ? '-preview' : ''}.mp4`,
-        'video/mp4',
-        'mp4',
-        { allowMemoryFallback: false },
-      );
-      await downloadProgressiveMedia(candidate.url, destination, {
-        signal: controller.signal,
-        networkPolicy,
-        ...(candidate.contentLength === undefined ? {} : { contentLength: candidate.contentLength }),
-        onProgress: setProgress,
-      });
-    } catch (cause) {
-      await destination?.abort(cause).catch(() => {});
-      if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-        setError(cause instanceof Error ? cause.message : t('downloadFailed'));
-      }
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  const startDashDownload = async () => {
-    if (!candidate || !dash) return;
-    setError(null);
-    setProgress(null);
-    const video = dash.tracks.find((track) => track.kind === 'video' && track.id === dashVideoId);
-    const audio = dash.tracks.find((track) => track.kind === 'audio' && track.id === dashAudioId);
-    const controller = new AbortController();
-    abortController.current = controller;
-    setDownloading(true);
-    let destination: RandomAccessBinaryWriter | undefined;
-    try {
-      const height = (video ?? preferredDashTrack(dash, 'video'))?.height;
-      const filename = `${safeFilename(candidate.title ?? 'video')}${height ? `-${height}p` : ''}${candidate.isPreview ? '-preview' : ''}.mp4`;
-      // Open the picker while the click still grants transient user activation.
-      destination = await openOutputWriter(filename, 'video/mp4', 'mp4');
-      const plan = await prepareDashDownload(dash, {
-        signal: controller.signal,
-        networkPolicy,
-      }, {
-        ...(video ? { video } : {}),
-        ...(audio ? { audio } : {}),
-      });
-      const writer = new SeparateTrackFmp4Writer(
-        destination,
-        plan.video.segments.length,
-        plan.audio.segments.length,
-      );
-      setProgress({
-        completedSegments: 0,
-        totalSegments: plan.totalSegments,
-        bytesWritten: 0,
-        phase: 'requesting',
-        networkBytesReceived: 0,
-      });
-      await downloadDashPlan(plan, writer, {
-        signal: controller.signal,
-        networkPolicy,
-        onProgress: setProgress,
-      });
-    } catch (cause) {
-      await destination?.abort(cause).catch(() => {});
-      if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-        setError(cause instanceof Error ? cause.message : t('downloadFailed'));
-      }
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  const startSabrDownload = async () => {
-    if (!candidate?.youtubeSabr) return;
-    const source = candidate.youtubeSabr;
-    const video = source.formats.find((format) => format.itag === sabrVideoItag);
-    if (!video || !sabrAudioItag) return;
+  const startDownload = async (selection: DirectMediaSelection) => {
+    if (!candidate || downloading || candidate.hasContentProtection) return;
     setError(null);
     setProgress(null);
     setDownloading(true);
     const controller = new AbortController();
     abortController.current = controller;
-    let destination: RandomAccessBinaryWriter | undefined;
     try {
-      // Acquire the file handle during the user's click, before async session lookup.
-      destination = await openOutputWriter(
-        `${safeFilename(candidate.title ?? 'video')}-${video.height}p.mp4`,
-        'video/mp4', 'mp4', { allowMemoryFallback: false },
-      );
-      const context = await getYouTubeSabrContext(candidate.tabId, candidate.id);
-      await downloadYouTubeSabr(source, context, destination, {
-        videoItag: sabrVideoItag,
-        audioItag: sabrAudioItag,
+      const output = describeBrowserDirectOutput(selection, candidate);
+      // Invoke the picker before any await while the click still grants user activation.
+      const pendingTarget = openOutputTarget(output.filename, output.mimeType, output.extension, {
+        allowMemoryFallback: output.allowMemoryFallback,
+      });
+      await runBrowserDirectDownload(selection, pendingTarget, {
+        sourceTabId: candidate.tabId,
+        candidateId: candidate.id,
         signal: controller.signal,
+        networkPolicy,
         onProgress: setProgress,
       });
     } catch (cause) {
-      await destination?.abort(cause).catch(() => {});
-      if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-        setError(cause instanceof Error ? cause.message : t('downloadFailed'));
+      if (!controller.signal.aborted && !(cause instanceof DOMException && cause.name === 'AbortError')) {
+        setError(runtimeErrorMessage(cause, t));
       }
     } finally {
+      if (abortController.current === controller) abortController.current = null;
       setDownloading(false);
     }
   };
+
+  const startHlsDownload = () => hls && startDownload({ kind: 'hls', hls, outputFormat });
+  const startProgressiveDownload = () => candidate?.kind === 'progressive' && startDownload({
+    kind: 'progressive', url: candidate.url,
+    ...(candidate.contentLength === undefined ? {} : { contentLength: candidate.contentLength }),
+  });
+  const startDashDownload = () => dash && startDownload({
+    kind: 'dash', source: dash, videoTrackId: dashVideoId, audioTrackId: dashAudioId,
+  });
+  const startSabrDownload = () => candidate?.youtubeSabr && sabrVideoItag && sabrAudioItag && startDownload({
+    kind: 'sabr', source: candidate.youtubeSabr, videoItag: sabrVideoItag, audioItag: sabrAudioItag,
+  });
 
   const changeOutputFormat = async (value: string) => {
     const format = outputFormatSchema.parse(value);
