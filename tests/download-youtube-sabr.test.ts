@@ -1,4 +1,3 @@
-// @ts-expect-error Vitest has Node available; the extension intentionally excludes Node typings.
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import muxjs from 'mux.js';
@@ -143,6 +142,23 @@ describe('YouTube SABR download', () => {
     expect(destination.close).toHaveBeenCalledOnce();
     expect(destination.abort).not.toHaveBeenCalled();
     expect(progress.at(-1)).toMatchObject({ completedSegments: 2, phase: 'completed', currentSpeedBytesPerSecond: 0 });
+  });
+
+  it('routes all SABR requests through the injected host while preserving request protections', async () => {
+    const hostFetch = mockMedia();
+    const globalFetch = vi.fn(async () => { throw new Error('Unexpected global network request.'); });
+    vi.stubGlobal('fetch', globalFetch);
+    const destination = new Destination();
+    await downloadYouTubeSabr(source, context, destination, { ...selection, transport: { fetch: hostFetch } });
+    expect(hostFetch).toHaveBeenCalled();
+    for (const [, init] of hostFetch.mock.calls) {
+      expect(init?.credentials).toBeUndefined();
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    }
+    expect(boxes(destination.data).map((box) => box.type)).toEqual(['ftyp', 'mdat', 'moov']);
+    expect(destination.close).toHaveBeenCalledOnce();
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 
   it('rejects an absent requested resolution instead of silently falling back', async () => {

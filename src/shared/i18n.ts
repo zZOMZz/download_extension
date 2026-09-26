@@ -1,6 +1,11 @@
 import type { AppLanguage } from './settings';
 
 const EN_MESSAGES = {
+  outputConflict: 'Another task owns the output file {filename}. Use distinct task titles or resolve the saved partials first.',
+  runtimeBusy: 'Another window is executing or changing this queue. Stop it there before taking over.',
+  runtimeLockUnavailable: 'This browser does not support safe task ownership.',
+  taskNotFound: 'The download task no longer exists.',
+  eventOutputCleanupPending: 'Output complete; temporary file cleanup will be retried.',
   appName: 'Open Media Downloader',
   authorizedMediaOnly: 'Authorized media only',
   mediaFound: 'Media found',
@@ -256,6 +261,11 @@ export type TranslationValues = Record<string, string | number>;
 export type Translator = (key: MessageKey, values?: TranslationValues) => string;
 
 const ZH_CN_MESSAGES: Record<MessageKey, string> = {
+  outputConflict: '另一个任务正在使用输出文件 {filename}。请使用不同标题，或先处理已有断点文件。',
+  runtimeBusy: '另一个窗口正在执行或修改队列。请先在那里停止，再接管任务。',
+  runtimeLockUnavailable: '当前浏览器不支持安全的任务执行锁。',
+  taskNotFound: '下载任务已不存在。',
+  eventOutputCleanupPending: '输出已完成，临时文件清理将在下次运行时重试。',
   appName: '网页媒体下载器',
   authorizedMediaOnly: '仅下载已获授权的媒体',
   mediaFound: '检测到媒体',
@@ -526,4 +536,8 @@ export function createTranslator(language: AppLanguage): Translator {
     const value = values[name];
     return value === undefined ? placeholder : String(value);
   });
+}
+
+export function hasMessageKey(value: string): value is MessageKey {
+  return Object.prototype.hasOwnProperty.call(EN_MESSAGES, value);
 }

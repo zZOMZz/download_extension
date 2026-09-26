@@ -1,4 +1,3 @@
-// @ts-expect-error Vitest has Node available; the extension intentionally excludes Node typings.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {

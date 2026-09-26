@@ -54,12 +54,48 @@ pnpm build
 
 ## Protocol task executors
 
-The manager owns queue scheduling, task recovery, diagnostics, and final output
-validation. Protocol-specific download and checkpoint behavior lives behind the
-executor registry in `src/browser/task-executors/`. An executor must claim one
-media kind, while site-specific detection, discovery, and request compatibility
-remain in their adapter layers. The registry rejects duplicate claims so adding
-a protocol cannot silently replace an existing implementation.
+`DownloadRuntime` owns queue scheduling, execution ownership, task recovery,
+diagnostics, and final output validation. The manager sends commands and renders
+snapshots; opening another manager does not reset active tasks. Protocol-specific
+download and checkpoint behavior lives behind `src/runtime/task-executors/`.
+An executor must claim one media kind, while site-specific detection, discovery,
+and request compatibility remain in their adapter layers. The registry rejects
+duplicate claims so adding a protocol cannot silently replace an implementation.
+
+All network requests accept a host-provided `Transport`. `ArtifactStore`,
+`TaskStore`, `ExecutionLocks`, and `TransformBackend` separate task rules from
+browser files, storage, sessions, and workers. Existing checkpoint versions 1
+and 2 remain readable. A durable `outputCommit` record allows interrupted
+completion to be retried; partial files are removed only after validation and
+persisting the completed task. Cleanup failures retain a retryable record.
+
+One-shot HLS, DASH, Progressive, and SABR downloads use
+`executeDirectDownload`. The UI acquires a file target under the user's gesture;
+the runtime closes, validates, and awaits the host's save confirmation before
+reporting success. One-shot targets do not claim persistent resume support.
+
+The portable entry is `src/runtime/index.ts`. A Node host and local CLI prove
+that the runtime also works without React, WXT, or a browser page:
+
+```bash
+pnpm typecheck:runtime
+pnpm build:runtime
+pnpm check:runtime
+pnpm runtime:cli --help
+pnpm runtime:cli --output /tmp/media-output --url http://localhost:8080/movie.m3u8 --kind hls
+```
+
+`build:runtime` produces `.output/runtime/` with JavaScript and TypeScript
+exports for the portable API and the Node host. `check:runtime` examines the
+bundle dependency graph and downloads a local HTTP fixture using the compiled
+library in a plain Node child process. This is a local package artifact; it is
+not published or deployed.
+
+See the [refactoring plan](docs/runtime-refactor-plan.md) and
+[runtime architecture and host contracts](docs/runtime-architecture.md) for
+ownership, recovery, capabilities, and integration examples. Browser capture and
+playback sessions remain extension capabilities; a Node or cloud host does not
+automatically inherit them.
 
 ## DASH and detection adapters
 

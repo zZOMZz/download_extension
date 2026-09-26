@@ -1,4 +1,4 @@
-import type { CandidateObservation } from '~/src/shared/media';
+import type { CandidateObservation } from '../../shared/media';
 
 const AUDIO_EXTENSIONS = new Set([
   'aac',

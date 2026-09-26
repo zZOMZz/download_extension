@@ -1,20 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import {
-  addPersistentDownloadTasks,
-  appendPersistentTaskDiagnosticEvent,
-  clearCompletedPersistentDownloadTasks,
-  configureManagerRequestAdapters,
   listPersistentDownloadTasks,
   listPersistentTaskDiagnosticEvents,
-  removePersistentDownloadTask,
-  replacePersistentDownloadTask,
   scanTabForMedia,
 } from '~/src/browser/runtime-client';
-import {
-  removeDirectoryFile,
-  type WritableDirectoryHandle,
-} from '~/src/browser/directory-output-writer';
+import type { WritableDirectoryHandle } from '~/src/browser/directory-output-writer';
 import {
   loadPersistedDirectoryHandle,
   persistDirectoryHandle,
@@ -29,31 +20,15 @@ import {
   setOutputFormat as persistOutputFormat,
   setTaskConcurrency as persistTaskConcurrency,
 } from '~/src/browser/settings';
-import { commitValidatedDirectoryOutput } from '~/src/browser/validated-output';
-import { findTaskExecutor } from '~/src/browser/task-executors/registry';
 import { buildTaskDiagnosticReport } from '~/src/core/diagnostics/task-report';
-import { resolveDiscoveredMedia } from '~/src/core/discovery/registry';
 import { formatBytes, formatDuration, safeFilename } from '~/src/core/format';
 import { ProgressMetrics } from '~/src/components/progress-metrics';
 import { BrandMark } from '~/src/components/brand-mark';
 import { LiquidShader } from '~/src/components/liquid-shader';
-import {
-  fetchTextResource,
-  isRecoverableNetworkError,
-  type HlsNetworkPolicy,
-  type HlsDownloadProgress,
-  type NetworkRetryEvent,
-} from '~/src/core/hls/download-hls';
-import {
-  HostHealthController,
-  type HostHealthSnapshot,
-  type NetworkRequestCoordinator,
-} from '~/src/core/network/host-health';
-import { OutputValidationError } from '~/src/core/media/output-validator';
-import { runTaskPool } from '~/src/core/task-pool';
-import { classifyTaskError } from '~/src/core/task-error';
-import { checkpointPartialFilenames } from '~/src/core/task-checkpoint';
-import { resetTaskState } from '~/src/core/task-state';
+import type { HostHealthSnapshot } from '~/src/core/network/host-health';
+import { createBrowserDownloadRuntime } from '~/src/browser/download-runtime';
+import { runtimeErrorMessage, runtimeFailureMessage } from '~/src/browser/runtime-messages';
+import type { DownloadRuntime } from '~/src/runtime/download-runtime';
 import { createTranslator, LANGUAGE_OPTIONS, type MessageKey, type Translator } from '~/src/shared/i18n';
 import {
   DOWNLOAD_TASKS_STORAGE_KEY,
@@ -63,9 +38,6 @@ import {
 } from '~/src/shared/download-task';
 import type { DiscoveredMediaItem } from '~/src/shared/discovery';
 import {
-  createTaskDiagnosticEvent,
-  diagnosticResource,
-  sanitizeDiagnosticText,
   type DownloadFailureCategory,
   type TaskDiagnosticEvent,
   type TaskDiagnosticEventCode,
@@ -127,6 +99,7 @@ const DIAGNOSTIC_EVENT_LABEL_KEYS: Record<TaskDiagnosticEventCode, MessageKey> =
   'recovery-scheduled': 'eventRecoveryScheduled',
   'finalize-started': 'eventFinalizeStarted',
   'output-validated': 'eventOutputValidated',
+  'output-cleanup-pending': 'eventOutputCleanupPending',
   'task-completed': 'eventTaskCompleted',
   'task-failed': 'eventTaskFailed',
   'task-cancelled': 'eventTaskCancelled',
@@ -250,45 +223,6 @@ function diagnosticEventMetadata(event: TaskDiagnosticEvent, t: Translator): str
   return details;
 }
 
-function configuredNetworkPolicy(
-  settings: NetworkSettings,
-  requestCoordinator?: NetworkRequestCoordinator,
-): HlsNetworkPolicy {
-  return {
-    maxAttempts: settings.maxAttempts,
-    firstByteTimeoutMs: settings.firstByteTimeoutSeconds * 1_000,
-    idleTimeoutMs: settings.idleTimeoutSeconds * 1_000,
-    ...(requestCoordinator ? { requestCoordinator } : {}),
-  };
-}
-
-function taskRetryDelay(settings: NetworkSettings, recoveryAttempt: number): number {
-  const delaySeconds = Math.min(
-    settings.taskRetryMaxDelaySeconds,
-    settings.taskRetryBaseDelaySeconds * (2 ** Math.max(0, recoveryAttempt - 1)),
-  );
-  return delaySeconds * 1_000;
-}
-
-async function waitUntil(timestamp: number, signal: AbortSignal): Promise<void> {
-  const delayMs = Math.max(0, timestamp - Date.now());
-  if (delayMs === 0) return;
-  if (signal.aborted) throw signal.reason ?? new DOMException('The queue was stopped.', 'AbortError');
-  await new Promise<void>((resolve, reject) => {
-    const finish = () => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    };
-    const timer = window.setTimeout(finish, delayMs);
-    const onAbort = () => {
-      window.clearTimeout(timer);
-      signal.removeEventListener('abort', onAbort);
-      reject(signal.reason ?? new DOMException('The queue was stopped.', 'AbortError'));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
 export function App() {
   const params = useMemo(() => new URLSearchParams(location.search), []);
   const rawSourceTabId = params.get('tabId');
@@ -312,29 +246,24 @@ export function App() {
   const [diagnosticEvents, setDiagnosticEvents] = useState<Record<string, TaskDiagnosticEvent[]>>({});
   const [diagnosticsLoadingId, setDiagnosticsLoadingId] = useState<string | null>(null);
   const [hostHealth, setHostHealth] = useState<HostHealthSnapshot[]>([]);
-  const abortController = useRef<AbortController | null>(null);
+  const runtimeRef = useRef<DownloadRuntime | null>(null);
   const t = useMemo(() => createTranslator(language), [language]);
 
   const refreshTasks = async () => {
     setTasks(await listPersistentDownloadTasks());
   };
 
-  const recordTaskEvent = async (
-    taskId: string,
-    code: TaskDiagnosticEventCode,
-    level: TaskDiagnosticEvent['level'] = 'info',
-    details: Omit<TaskDiagnosticEvent, 'id' | 'taskId' | 'at' | 'level' | 'code'> = {},
-  ): Promise<void> => {
-    const event = createTaskDiagnosticEvent({ taskId, code, level, ...details });
-    setDiagnosticEvents((current) => current[taskId]
-      ? { ...current, [taskId]: [...current[taskId], event] }
-      : current);
-    try {
-      await appendPersistentTaskDiagnosticEvent(event);
-    } catch (cause) {
-      console.warn('Unable to persist task diagnostics.', cause);
-    }
-  };
+  const createRuntime = () => createBrowserDownloadRuntime({
+    directory,
+    ...(directoryHandleId ? { directoryHandleId } : {}),
+    networkSettings,
+    concurrency: taskConcurrency,
+    onEvent: (event) => setDiagnosticEvents((current) => current[event.taskId]
+      ? { ...current, [event.taskId]: [...current[event.taskId]!, event] }
+      : current),
+  });
+
+  useEffect(() => () => runtimeRef.current?.cancel(), []);
 
   const toggleTaskDetails = async (taskId: string) => {
     if (expandedTaskId === taskId) {
@@ -389,7 +318,6 @@ export function App() {
             return null;
           }),
         ]);
-        const settingsT = createTranslator(settings.language);
         setLanguage(settings.language);
         setOutputFormat(settings.outputFormat);
         setTaskConcurrency(settings.taskConcurrency);
@@ -402,18 +330,7 @@ export function App() {
             setDirectoryHandleId(persistedDirectory.id);
           }
         }
-        const interrupted = storedTasks.filter(
-          ({ status }) => status === 'resolving' || status === 'downloading',
-        );
-        for (const task of interrupted) {
-          await replacePersistentDownloadTask(
-            resetTaskState(task, 'queued', settingsT('previousSessionEnded')),
-          );
-          await recordTaskEvent(task.id, 'manager-interrupted', 'warning', {
-            message: settingsT('previousSessionEnded'),
-          });
-        }
-        setTasks(interrupted.length ? await listPersistentDownloadTasks() : storedTasks);
+        setTasks(storedTasks);
 
         if (sourceTabId !== null && Number.isInteger(sourceTabId) && sourceTabId >= 0) {
           const items = await scanTabForMedia(sourceTabId);
@@ -484,268 +401,44 @@ export function App() {
     const items = discovered.filter(({ id }) => selectedIds.has(id));
     if (items.length === 0) return;
     try {
-      const dashItems = items.filter(({ mediaKind }) => mediaKind === 'dash' || mediaKind === 'progressive');
-      const otherItems = items.filter(({ mediaKind }) => mediaKind !== 'dash' && mediaKind !== 'progressive');
-      let savedTasks = tasks;
-      if (otherItems.length > 0) {
-        savedTasks = await addPersistentDownloadTasks(otherItems, outputFormat);
-      }
-      if (dashItems.length > 0) {
-        savedTasks = await addPersistentDownloadTasks(dashItems, 'mp4');
-      }
-      setTasks(savedTasks);
+      const snapshot = await createRuntime().enqueue(items, outputFormat);
+      setTasks([...snapshot.tasks]);
       setSelectedIds(new Set());
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('unableAddEpisodes'));
-    }
-  };
-
-  const persistTask = async (task: DownloadTask): Promise<DownloadTask> => {
-    const saved = await replacePersistentDownloadTask(task);
-    setTasks((current) => current.map((item) => item.id === saved.id ? saved : item));
-    return saved;
-  };
-
-  const showProgress = (taskId: string, progress: HlsDownloadProgress) => {
-    setTasks((current) => current.map((item) => item.id === taskId ? { ...item, progress } : item));
-  };
-
-  const executeTask = async (
-    initialTask: DownloadTask,
-    signal: AbortSignal,
-    requestCoordinator: NetworkRequestCoordinator,
-  ) => {
-    const networkPolicy = configuredNetworkPolicy(networkSettings, requestCoordinator);
-    let latestProgress = initialTask.progress;
-    let task = await persistTask(resetTaskState(initialTask, 'resolving'));
-    await recordTaskEvent(task.id, 'resolve-started');
-    const recordRequestRetry = (
-      retry: NetworkRetryEvent,
-      resourceKind: TaskDiagnosticEvent['resourceKind'],
-      resourceUrl: string,
-      segment?: number,
-    ) => {
-      const statusMatch = /^HTTP (\d{3})$/.exec(retry.reason);
-      void recordTaskEvent(task.id, 'request-retry', 'warning', {
-        ...diagnosticResource(resourceUrl),
-        ...(resourceKind ? { resourceKind } : {}),
-        ...(segment === undefined ? {} : { segment }),
-        ...(statusMatch ? { httpStatus: Number(statusMatch[1]) } : {}),
-        attempt: retry.attempt,
-        maxAttempts: retry.maxAttempts,
-        delayMs: retry.delayMs,
-        message: retry.reason,
-      });
-    };
-    const showTextRetry = (retry: NetworkRetryEvent, url: string) => {
-      const progress: HlsDownloadProgress = {
-        completedSegments: latestProgress?.completedSegments ?? task.checkpoint?.completedSegments ?? 0,
-        totalSegments: latestProgress?.totalSegments ?? task.checkpoint?.totalSegments ?? 1,
-        bytesWritten: latestProgress?.bytesWritten ?? task.checkpoint?.bytesWritten ?? 0,
-        networkBytesReceived: latestProgress?.networkBytesReceived ?? 0,
-        phase: 'retrying',
-        retryAttempt: retry.attempt,
-        maxAttempts: retry.maxAttempts,
-        retryDelayMs: retry.delayMs,
-        retryReason: retry.reason,
-      };
-      latestProgress = progress;
-      showProgress(task.id, progress);
-      recordRequestRetry(retry, 'text', url);
-    };
-    const loadText = (url: string, requestSignal?: AbortSignal) =>
-      fetchTextResource(url, requestSignal, networkPolicy, {
-        onRetry: (retry) => showTextRetry(retry, url),
-      });
-    try {
-      const media = await resolveDiscoveredMedia(task.source, { fetchText: loadText, signal });
-      if (media.kind === 'hls' || media.kind === 'dash' || media.kind === 'progressive') {
-        task = await persistTask({
-          ...task,
-          source: { ...task.source, mediaKind: media.kind },
-          ...(media.kind === 'progressive' ? { outputFormat: 'mp4' as const } : {}),
-        });
-      }
-      await recordTaskEvent(task.id, 'source-resolved', 'info', {
-        ...diagnosticResource(media.url),
-        ...(media.kind === 'hls' || media.kind === 'dash' || media.kind === 'progressive' ? { protocol: media.kind } : {}),
-      });
-      if (!directory) throw new Error(t('chooseDirectoryBeforeQueue'));
-      const executor = findTaskExecutor(media.kind);
-      if (!executor) throw new Error(t('batchProtocolUnsupported'));
-      const execution = await executor.execute({
-        task,
-        media,
-        directory,
-        ...(directoryHandleId ? { directoryHandleId } : {}),
-        signal,
-        networkPolicy,
-        networkSettings,
-        loadText,
-        refreshMedia: () => resolveDiscoveredMedia(task.source, { fetchText: loadText, signal }),
-        persistTask: async (next) => {
-          task = await persistTask(next);
-          return task;
-        },
-        onProgress: (progress) => {
-          latestProgress = progress;
-          showProgress(task.id, progress);
-        },
-        recordTaskEvent: (code, level, details) =>
-          recordTaskEvent(task.id, code, level ?? 'info', details ?? {}),
-        recordRequestRetry,
-        t,
-      });
-      const validation = await commitValidatedDirectoryOutput(
-        directory,
-        execution.finalFilename,
-        execution.validationOptions,
-        execution.partialOutputsToRemove,
-      );
-      await recordTaskEvent(task.id, 'output-validated', 'info', {
-        filename: execution.finalFilename,
-        bytesWritten: validation.size,
-        ...(validation.videoTracks === undefined ? {} : { videoTracks: validation.videoTracks }),
-        ...(validation.audioTracks === undefined ? {} : { audioTracks: validation.audioTracks }),
-        ...(validation.durationSeconds === undefined
-          ? {}
-          : { durationSeconds: validation.durationSeconds }),
-      });
-      const completed = resetTaskState(task, 'completed');
-      delete completed.checkpoint;
-      delete completed.recoveryAttempt;
-      delete completed.nextRetryAt;
-      await persistTask(completed);
-      await recordTaskEvent(task.id, 'task-completed', 'info', {
-        completedSegments: latestProgress?.completedSegments,
-        totalSegments: latestProgress?.totalSegments,
-        bytesWritten: validation.size,
-      });
-      return 'completed' as const;
-    } catch (cause) {
-      const cancelled = signal.aborted || (cause instanceof DOMException && cause.name === 'AbortError');
-      const message = cancelled
-        ? t('taskCancelled')
-        : cause instanceof OutputValidationError ? t('outputValidationFailed')
-        : cause instanceof Error ? cause.message : t('downloadFailed');
-      const classified = classifyTaskError(cancelled
-        ? new DOMException(message, 'AbortError')
-        : cause);
-      const failure = { ...classified, message: sanitizeDiagnosticText(message) };
-      const previousRecoveryAttempts = task.recoveryAttempt ?? 0;
-      if (
-        !cancelled &&
-        isRecoverableNetworkError(cause) &&
-        previousRecoveryAttempts < networkSettings.taskRecoveryAttempts
-      ) {
-        const recoveryAttempt = previousRecoveryAttempts + 1;
-        const delayMs = taskRetryDelay(networkSettings, recoveryAttempt);
-        const recoveryProgress = latestProgress ? { ...latestProgress, phase: 'retrying' as const } : undefined;
-        if (recoveryProgress) {
-          delete recoveryProgress.retryAttempt;
-          delete recoveryProgress.maxAttempts;
-          delete recoveryProgress.retryDelayMs;
-          delete recoveryProgress.retryReason;
-        }
-        const waiting: DownloadTask = {
-          ...task,
-          status: 'waiting',
-          updatedAt: Date.now(),
-          error: message,
-          failure,
-          recoveryAttempt,
-          nextRetryAt: Date.now() + delayMs,
-          ...(recoveryProgress ? { progress: recoveryProgress } : {}),
-        };
-        await persistTask(waiting);
-        await recordTaskEvent(task.id, 'recovery-scheduled', 'warning', {
-          message,
-          recoveryAttempt,
-          nextRetryAt: waiting.nextRetryAt,
-          ...(failure.resourceHost ? { resourceHost: failure.resourceHost } : {}),
-          ...(failure.resourcePath ? { resourcePath: failure.resourcePath } : {}),
-          ...(failure.httpStatus ? { httpStatus: failure.httpStatus } : {}),
-          ...(failure.resourceKind ? { resourceKind: failure.resourceKind } : {}),
-        });
-        return 'waiting' as const;
-      }
-      const status = cancelled ? 'cancelled' : 'failed';
-      const stopped = resetTaskState(task, status, message);
-      stopped.failure = failure;
-      if (latestProgress) stopped.progress = latestProgress;
-      delete stopped.nextRetryAt;
-      await persistTask(stopped);
-      await recordTaskEvent(task.id, cancelled ? 'task-cancelled' : 'task-failed', cancelled ? 'warning' : 'error', {
-        message,
-        ...(failure.resourceHost ? { resourceHost: failure.resourceHost } : {}),
-        ...(failure.resourcePath ? { resourcePath: failure.resourcePath } : {}),
-        ...(failure.httpStatus ? { httpStatus: failure.httpStatus } : {}),
-        ...(failure.resourceKind ? { resourceKind: failure.resourceKind } : {}),
-      });
-      return status;
+      setError(runtimeErrorMessage(cause, t));
     }
   };
 
   const startQueue = async () => {
-    if (!directory) {
-      setError(t('chooseDirectoryBeforeQueue'));
-      return;
-    }
-    const controller = new AbortController();
-    abortController.current = controller;
+    if (!directory) { setError(t('chooseDirectoryBeforeQueue')); return; }
+    if (runtimeRef.current) return;
+    const runtime = createRuntime();
+    runtimeRef.current = runtime;
     setRunning(true);
     setError(null);
     setSummary(null);
-    setHostHealth([]);
-    const hostController = new HostHealthController({
-      maxConcurrency: taskConcurrency,
-      onChange: setHostHealth,
+    const included = new Set(tasks.filter(({ status }) =>
+      ['queued', 'waiting', 'resolving', 'downloading'].includes(status)).map(({ id }) => id));
+    const unsubscribe = runtime.subscribe((snapshot) => {
+      setTasks([...snapshot.tasks]);
+      setHostHealth([...snapshot.hostHealth]);
     });
     try {
-      const initial = (await listPersistentDownloadTasks()).filter(
-        ({ status }) => status === 'queued' || status === 'waiting',
-      );
-      await configureManagerRequestAdapters(initial.map(({ source }) => source.adapterId));
-      const includedIds = new Set(initial.map(({ id }) => id));
-      while (!controller.signal.aborted) {
-        const candidates = (await listPersistentDownloadTasks()).filter(
-          ({ id, status }) => includedIds.has(id) && (status === 'queued' || status === 'waiting'),
-        );
-        if (candidates.length === 0) break;
-        const now = Date.now();
-        const ready = candidates.filter(({ status, nextRetryAt }) =>
-          status === 'queued' || nextRetryAt === undefined || nextRetryAt <= now);
-        if (ready.length === 0) {
-          const nextRetryAt = Math.min(...candidates.map(({ nextRetryAt }) => nextRetryAt ?? now));
-          await waitUntil(nextRetryAt, controller.signal);
-          continue;
-        }
-        await runTaskPool({
-          items: ready,
-          concurrency: taskConcurrency,
-          run: (task) => executeTask(task, controller.signal, hostController),
-          shouldStop: () => controller.signal.aborted,
-        });
-      }
-
-      const finalTasks = (await listPersistentDownloadTasks()).filter(({ id }) => includedIds.has(id));
-      const completed = finalTasks.filter(({ status }) => status === 'completed').length;
-      const failed = finalTasks.filter(({ status }) => status === 'failed').length;
-      const cancelled = finalTasks.filter(({ status }) => status === 'cancelled').length;
-      const untouched = finalTasks.filter(({ status }) => status === 'queued' || status === 'waiting').length;
-      setSummary(t('queueFinished', {
-        completed,
-        failed,
+      const snapshot = await runtime.start();
+      const results = snapshot.tasks.filter(({ id }) => included.has(id));
+      const completed = results.filter(({ status }) => status === 'completed').length;
+      const failed = results.filter(({ status }) => status === 'failed').length;
+      const cancelled = results.filter(({ status }) => status === 'cancelled').length;
+      const queued = results.filter(({ status }) => status === 'queued' || status === 'waiting').length;
+      setSummary(t('queueFinished', { completed, failed,
         cancelled: cancelled ? t('cancelledSuffix', { count: cancelled }) : '',
-        queued: untouched ? t('queuedSuffix', { count: untouched }) : '',
-      }));
+        queued: queued ? t('queuedSuffix', { count: queued }) : '' }));
     } catch (cause) {
-      if (!controller.signal.aborted) {
-        setError(cause instanceof Error ? cause.message : t('queueStoppedUnexpectedly'));
-      }
+      setError(runtimeErrorMessage(cause, t));
     } finally {
-      abortController.current = null;
+      unsubscribe();
+      runtimeRef.current = null;
       setRunning(false);
       await refreshTasks();
     }
@@ -820,60 +513,26 @@ export function App() {
     await saveNetworkSettings(parsed.data);
   };
 
-  const retryTask = async (task: DownloadTask) => {
-    const queued = resetTaskState(task, 'queued');
-    delete queued.recoveryAttempt;
-    delete queued.nextRetryAt;
-    await persistTask(queued);
-    await recordTaskEvent(task.id, 'manual-retry');
+  const runTaskCommand = async (command: 'retry' | 'restart' | 'remove', task: DownloadTask) => {
+    try {
+      const runtime = createRuntime();
+      await runtime[command](task.id);
+      setTasks([...runtime.getSnapshot().tasks]);
+      setError(null);
+    } catch (cause) { setError(runtimeErrorMessage(cause, t)); }
   };
-
-  const restartTask = async (task: DownloadTask) => {
-    if (task.checkpoint) {
-      if (!directory) {
-        setError(t('chooseTaskFolderDiscard'));
-        return;
-      }
-      if (directory.name !== task.checkpoint.directoryName) {
-        setError(t('chooseOriginalFolderRestart', { name: task.checkpoint.directoryName }));
-        return;
-      }
-      for (const partialFilename of checkpointPartialFilenames(task.checkpoint)) {
-        await removeDirectoryFile(directory, partialFilename);
-      }
-    }
-    const queued = resetTaskState(task, 'queued');
-    delete queued.checkpoint;
-    delete queued.recoveryAttempt;
-    delete queued.nextRetryAt;
-    await persistTask(queued);
-    await recordTaskEvent(task.id, 'manual-restart');
-  };
-
-  const removeTask = async (task: DownloadTask) => {
-    if (task.checkpoint) {
-      if (!directory) {
-        setError(t('chooseTaskFolderRemove'));
-        return;
-      }
-      if (directory.name !== task.checkpoint.directoryName) {
-        setError(t('chooseOriginalFolderRemove', { name: task.checkpoint.directoryName }));
-        return;
-      }
-      for (const partialFilename of checkpointPartialFilenames(task.checkpoint)) {
-        await removeDirectoryFile(directory, partialFilename);
-      }
-    }
-    await removePersistentDownloadTask(task.id);
-    setTasks((current) => current.filter(({ id }) => id !== task.id));
-  };
-
+  const retryTask = (task: DownloadTask) => runTaskCommand('retry', task);
+  const restartTask = (task: DownloadTask) => runTaskCommand('restart', task);
+  const removeTask = (task: DownloadTask) => runTaskCommand('remove', task);
   const clearCompleted = async () => {
-    await clearCompletedPersistentDownloadTasks();
-    await refreshTasks();
+    try {
+      const runtime = createRuntime();
+      await runtime.clearCompleted();
+      setTasks([...runtime.getSnapshot().tasks]);
+    } catch (cause) { setError(runtimeErrorMessage(cause, t)); }
   };
 
-  const queuedCount = tasks.filter(({ status }) => status === 'queued' || status === 'waiting').length;
+  const queuedCount = tasks.filter(({ status, outputCommit }) => ['queued', 'waiting', 'resolving', 'downloading'].includes(status) || (status === 'completed' && outputCommit)).length;
   const completedCount = tasks.filter(({ status }) => status === 'completed').length;
   const activeCount = tasks.filter(({ status }) => status === 'resolving' || status === 'downloading').length;
   const discoveredDashOnly = discovered.length > 0 && discovered.every(({ mediaKind }) => mediaKind === 'dash' || mediaKind === 'progressive');
@@ -898,7 +557,7 @@ export function App() {
               : t('startQueue', { count: queuedCount })}
           </button>
           {running && (
-            <button className="danger" onClick={() => abortController.current?.abort()}>{t('stopQueue')}</button>
+            <button className="danger" onClick={() => runtimeRef.current?.cancel()}>{t('stopQueue')}</button>
           )}
         </div>
       </header>
@@ -986,7 +645,7 @@ export function App() {
               </select>
             </label>
             {discoveredDashOnly && <p className="dash-output-note">{t('dashBatchMp4Notice')}</p>}
-            <button className="primary" disabled={selectedIds.size === 0} onClick={() => void addSelected()}>
+            <button className="primary" disabled={running || selectedIds.size === 0} onClick={() => void addSelected()}>
               {t('addSelected', { count: selectedIds.size })}
             </button>
           </div>
@@ -1004,7 +663,7 @@ export function App() {
               {settingsOpen ? t('closeSettings') : t('settings')}
             </button>
             {completedCount > 0 && (
-              <button className="quiet" onClick={() => void clearCompleted()}>{t('clearCompleted')}</button>
+              <button className="quiet" disabled={running} onClick={() => void clearCompleted()}>{t('clearCompleted')}</button>
             )}
           </div>
         </div>
@@ -1152,7 +811,7 @@ export function App() {
                   </div>
                 </div>
                 <span>{task.source.seriesTitle}</span>
-                {task.error && <p className="task-error">{task.error}</p>}
+                {task.error && <p className="task-error">{runtimeFailureMessage(task.failure, task.error, t)}</p>}
                 {task.failure && (
                   <p className={`failure-summary failure-${task.failure.category}`}>
                     {t('failureSummary', {

@@ -1,18 +1,7 @@
-import type { DiscoveredMediaItem } from '~/src/shared/discovery';
-import type { MediaKind } from '~/src/shared/media';
-import type { DashMediaSource } from '~/src/shared/media';
+import type { DiscoveredMediaItem } from '../../shared/discovery';
 
-export interface ResolvedDiscoveredMedia {
-  kind: Exclude<MediaKind, 'blob'>;
-  url: string;
-  title: string;
-  dash?: DashMediaSource;
-}
-
-export interface DiscoveryResolveContext {
-  fetchText(url: string, signal?: AbortSignal): Promise<string>;
-  signal?: AbortSignal;
-}
+export type { ResolvedDiscoveredMedia, DiscoveryResolveContext } from './source';
+import type { ResolvedDiscoveredMedia, DiscoveryResolveContext } from './source';
 
 export interface DiscoveryScanContext {
   fetchText(url: string, signal?: AbortSignal): Promise<string>;

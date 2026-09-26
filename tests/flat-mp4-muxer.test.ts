@@ -1,4 +1,3 @@
-// @ts-expect-error Vitest runs in Node; the browser extension intentionally does not include Node typings.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import muxjs from 'mux.js';

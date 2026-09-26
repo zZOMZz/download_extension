@@ -5,8 +5,10 @@ import {
   type HlsDownloadProgress,
   type HlsNetworkPolicy,
 } from '../hls/download-hls';
+import { browserTransport, type Transport } from '../network/transport';
 
 export interface ProgressiveDownloadOptions {
+  transport?: Transport;
   signal?: AbortSignal;
   networkPolicy?: HlsNetworkPolicy;
   contentLength?: number;
@@ -80,8 +82,7 @@ export async function downloadProgressiveMedia(
     const request = async (): Promise<{ completed: true } | { completed: false; outputFailure: unknown }> => {
       // Host cooldown/slot waiting must finish before the first-byte timer or fetch starts.
       controller.signal.throwIfAborted();
-      const response = await waitForNetwork(fetch(url, {
-        credentials: 'include',
+      const response = await waitForNetwork((options.transport ?? browserTransport).fetch(url, {
         signal: controller.signal,
       }), options.networkPolicy?.firstByteTimeoutMs ?? 15_000);
       if (response.status !== 200) {

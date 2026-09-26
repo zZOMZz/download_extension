@@ -1,3 +1,4 @@
+/** Extension-only IPC for capture/session access and the trusted manager TaskStore adapter. */
 import { z } from 'zod';
 import { browser } from 'wxt/browser';
 import { mediaCandidateSchema } from '~/src/shared/media';
@@ -136,10 +137,6 @@ export async function replacePersistentDownloadTask(task: DownloadTask): Promise
 
 export async function removePersistentDownloadTask(taskId: string): Promise<void> {
   await runRuntimeAction({ type: 'task:remove', taskId });
-}
-
-export async function clearCompletedPersistentDownloadTasks(): Promise<void> {
-  await runRuntimeAction({ type: 'task:clear-completed' });
 }
 
 export async function appendPersistentTaskDiagnosticEvent(event: TaskDiagnosticEvent): Promise<void> {

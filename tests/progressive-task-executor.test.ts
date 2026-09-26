@@ -1,11 +1,10 @@
-// @ts-expect-error Vitest runs in Node; the browser extension intentionally does not include Node typings.
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import muxjs from 'mux.js';
 import type { WritableDirectoryHandle } from '../src/browser/directory-output-writer';
 import { progressiveTaskExecutor } from '../src/browser/task-executors/progressive';
 import type { TaskExecutorContext } from '../src/browser/task-executors/types';
-import { commitValidatedDirectoryOutput } from '../src/browser/validated-output';
+import { validateDirectoryOutput } from '../src/browser/validated-output';
 import { isRecoverableNetworkError } from '../src/core/hls/download-hls';
 import { classifyTaskError } from '../src/core/task-error';
 import type { DownloadTaskProgress } from '../src/shared/download-task';
@@ -99,8 +98,8 @@ describe('progressive task executor', () => {
     vi.stubGlobal('fetch', fetchMock);
     const { context, files, progress } = setup();
     const result = await progressiveTaskExecutor.execute(context);
-    const validation = await commitValidatedDirectoryOutput(
-      context.directory, result.finalFilename, result.validationOptions, result.partialOutputsToRemove,
+    const validation = await validateDirectoryOutput(
+      context.directory, result.finalFilename, result.validationOptions,
     );
 
     expect(result.finalFilename).toBe('Series - Episode 1.mp4');

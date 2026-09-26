@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { findTaskExecutor } from '../src/browser/task-executors/registry';
+import { findTaskExecutor as findRuntimeTaskExecutor } from '../src/runtime/task-executors/registry';
 import type { ProtocolTaskExecutor } from '../src/browser/task-executors/types';
 
 describe('task executor registry', () => {
@@ -8,6 +9,9 @@ describe('task executor registry', () => {
     expect(findTaskExecutor('dash')?.kind).toBe('dash');
     expect(findTaskExecutor('progressive')?.kind).toBe('progressive');
     expect(findTaskExecutor('sabr')).toBeUndefined();
+    for (const kind of ['hls', 'dash', 'progressive', 'sabr'] as const) {
+      expect(findRuntimeTaskExecutor(kind)?.kind).toBe(findTaskExecutor(kind)?.kind);
+    }
   });
 
   it('rejects overlapping protocol executors', () => {

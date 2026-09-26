@@ -1,7 +1,7 @@
 import type { DownloadCheckpoint } from '../shared/download-task';
 
 export function checkpointMatchesDirectory(
-  checkpoint: DownloadCheckpoint,
+  checkpoint: Pick<DownloadCheckpoint, 'directoryHandleId' | 'directoryName'>,
   directory: { name: string; handleId?: string },
 ): boolean {
   return checkpoint.directoryHandleId

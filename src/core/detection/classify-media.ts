@@ -1,4 +1,4 @@
-import type { MediaKind } from '~/src/shared/media';
+import type { MediaKind } from '../../shared/media';
 
 const HLS_MIME_TYPES = new Set([
   'application/mpegurl',

@@ -8,6 +8,7 @@ import type {
 } from '../hls/download-hls';
 import { estimateRemainingSeconds, fetchBinaryResource } from '../hls/download-hls';
 import { parseSidxResources } from '../mp4/sidx';
+import type { Transport } from '../network/transport';
 import type { DashMediaSource, DashResource, DashTrack } from '../../shared/media';
 
 export interface ResolvedDashTrack extends DashTrack {
@@ -21,6 +22,7 @@ export interface DashDownloadPlan {
 }
 
 export interface DashDownloadOptions {
+  transport?: Transport;
   signal?: AbortSignal;
   networkPolicy?: HlsNetworkPolicy;
   onProgress?: (progress: HlsDownloadProgress) => void;
@@ -67,6 +69,7 @@ async function fetchDashResource(
         callbacksForUrl(url),
         resourceKind,
         true,
+        options.transport,
       );
       return { bytes, url };
     } catch (cause) {
