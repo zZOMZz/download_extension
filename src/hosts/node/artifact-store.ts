@@ -103,14 +103,26 @@ export class NodeArtifactStore implements ArtifactStore {
     const finish = async (commit: boolean): Promise<void> => {
       if (closed) return;
       closed = true;
+      let failure: { cause: unknown } | undefined;
       try {
         if (commit || resume) await handle.sync();
-      } finally {
-        await handle.close();
+      } catch (cause) { failure = { cause }; }
+      try { await handle.close(); }
+      catch (cause) { failure ??= { cause }; }
+      if (failure) {
+        // Fresh staging data has no recovery owner. Preserve the original failure and old output.
+        // Resumable writes belong to the checkpoint and must remain available after any failure.
+        if (!resume) await unlink(writablePath).catch(() => {});
+        throw failure.cause;
       }
       if (resume) return;
-      if (commit) await rename(writablePath, destination);
-      else await unlink(writablePath);
+      try {
+        if (commit) await rename(writablePath, destination);
+        else await unlink(writablePath);
+      } catch (cause) {
+        await unlink(writablePath).catch(() => {});
+        throw cause;
+      }
     };
     return {
       write: async (chunk) => {

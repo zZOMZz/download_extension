@@ -13,7 +13,7 @@
     "test:run": "vitest run",
     "runtime:cli": "tsx --tsconfig tsconfig.runtime.json scripts/runtime-cli.ts",
     "typecheck:runtime": "tsc --noEmit -p tsconfig.runtime.json",
-    "test:runtime": "vitest run tests/download-runtime.test.ts tests/node-runtime.test.ts tests/runtime-task-executors.test.ts tests/runtime-progressive-executor.test.ts tests/transport.test.ts",
+    "test:runtime": "vitest run tests/download-runtime.test.ts tests/node-runtime.test.ts tests/node-artifact-failure.test.ts tests/runtime-task-executors.test.ts tests/runtime-progressive-executor.test.ts tests/transport.test.ts",
     "build:runtime": "vite build --config vite.runtime.config.ts && tsc -p tsconfig.runtime-build.json && tsx --tsconfig tsconfig.runtime.json scripts/package-runtime.ts",
     "check:runtime": "tsx --tsconfig tsconfig.runtime.json scripts/check-runtime-build.ts",
     "test:e2e": "pnpm build && playwright test"

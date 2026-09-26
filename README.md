@@ -20,6 +20,28 @@ pnpm test:run
 pnpm build
 ```
 
+## Built-extension E2E
+
+```bash
+pnpm exec playwright install chromium --no-shell
+pnpm test:e2e
+```
+
+`test:e2e` builds the production MV3 extension and loads it into isolated
+Chromium profiles. It drives the popup, downloader, and manager UI, then reads
+and validates the actual output bytes. The journeys cover HLS to MP4, a
+persistent two-task queue with competing managers and stop/reopen/resume, and
+Bilibili bangumi discovery through the Progressive batch executor.
+
+Media comes from a local HTTP server; site pages and API responses use controlled
+fixtures. The only filesystem dialog seam supplies real OPFS handles, so these
+tests exercise Chromium storage, IndexedDB, streams, Web Locks, and workers but
+do not validate native OS dialogs, real website accounts, or a browser crash.
+Each run removes its temporary browser profiles and keeps traces and screenshots
+under `test-results/e2e/`, with an HTML report in `playwright-report/e2e/`.
+Set `PLAYWRIGHT_BROWSERS_PATH` consistently for installation and execution if a
+separate browser cache is needed.
+
 ## Current scope
 
 - Detect progressive video/audio, HLS playlists, DASH manifests, site-exposed DASH metadata, and blob media.

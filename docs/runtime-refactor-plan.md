@@ -1,6 +1,6 @@
 # 下载 Runtime 重构计划
 
-状态：M1–M5 初版已完成代码与自动化验收；本轮按用户要求变基到最新 main，补齐 Bilibili Progressive 队列兼容与扩展 E2E，再提交 PR。重跑结果由本轮验收记录更新。
+状态：M1–M5 已完成；已变基到 main `9ef39e5`，Bilibili Progressive 兼容、完整回归、构建及扩展 E2E 验收通过。通过 PR 交付，main 主工作区继续独立开发。
 
 ## 工作区与范围
 
@@ -133,3 +133,28 @@ Host implements ports: Extension / Web / Node-Electron / Cloud
 | 工作区隔离 | `main` 与 `codex/download-runtime` 为不同 worktree；main 的并行修改未被本次写入或集成 |
 
 上述表格记录变基前的初版结果，不作为本轮 main 集成后的验证结论。本轮在独立 worktree 中解决 manager/downloader、Progressive 引擎、站点适配器与 shared schema 的兼容问题，并重新执行回归与扩展 E2E；验证通过后创建 PR，不直接合并 main 或部署。
+
+
+### 本轮集成验收（2026-09-27，变基后）
+
+- 从 `origin/main` 的 `9ef39e5` 线性 rebase；保留 Bilibili 番剧来源身份、预览/DRM 限制、Progressive 超时与 host 并发协调。main 仍为本分支祖先，无 merge commit。
+- 复审修复两处输出故障：无效成品重试可复用保留的 checkpoint；Node fresh staging 提交失败时清理暂存，保留原成品/续传 partial 和原始错误。
+
+| 检查 | 结果 |
+|---|---|
+| `pnpm typecheck` / `pnpm typecheck:runtime` | 均通过 |
+| `pnpm test:run` | 61 个测试文件、468 项测试全部通过 |
+| `pnpm build` | Chromium MV3 最终生产构建通过 |
+| `pnpm build:runtime` / `pnpm check:runtime` | 均通过；47 个实际模块通过边界检查，普通 Node 子进程下载并校验 157701 字节 MP4，音视频各 1 轨 |
+| `PLAYWRIGHT_BROWSERS_PATH=/private/tmp/download-runtime-playwright pnpm exec playwright test` | 最终生产构建的 3 条浏览器 E2E 全部通过 |
+| E2E 环境 | Node 24.14.1 / Playwright 1.63.0 / Chromium 153.0.8010.12，独立临时浏览器 profile |
+| `git diff --check` | 通过 |
+| 工作区隔离 | 所有修改、依赖安装与测试均在 runtime worktree；main 主工作区保持干净 |
+
+E2E 从扩展 UI 操作并读取实际产物：
+
+1. 本地 HLS 被 content/background 发现，经 popup 打开下载页，执行 Worker 封装，保存并校验 MP4 音视频轨道。
+2. 从站点 fixture 扫描并加入两个任务，第二个 manager 争锁失败且不重置活跃任务；停止后保留分片，在新 manager 恢复，仅补缺失分片，校验两个输出及 partial 清理。
+3. Bilibili 番剧页面/API fixture 经真实 discovery/resolver 进入 Progressive 队列执行器，完成 MP4 并校验轨道。
+
+唯一文件选择接缝用真实 OPFS handle 代替原生 OS 对话框，真实 Chromium storage、IndexedDB、文件流、Web Locks 和扩展 Worker 仍参与执行。站点页面/API 使用受控 fixture，媒体走本地 HTTP；未验证真实账号、原生文件权限对话框或浏览器进程崩溃。trace、截图和诊断保存在忽略的 `test-results/e2e/`，HTML 报告在 `playwright-report/e2e/`；临时浏览器 profile 在退出时清理。复现命令见 README。

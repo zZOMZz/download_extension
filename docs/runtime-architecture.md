@@ -145,6 +145,8 @@ console.log(result.tasks.map(({ id, status }) => ({ id, status })));
 
 清理失败不会回退已经持久化的完成状态；下次取得执行权时会再清理。成品已经写完而 completed 尚未保存时，仍保留提交记录及可恢复内容。HLS/DASH checkpoint 中的字节计数不是落盘证明，恢复时仍要核对实际文件大小、分片边界与资源指纹。Progressive 任务只恢复队列状态与来源，未完成整文件需要重新下载；已有分片 checkpoint 不能直接转成 Progressive。
 
+成品被结构校验证实无效或缺失时，runtime 清除失效的 `outputCommit`，保留 checkpoint；用户重试会用原有 partial 重新执行封装。普通文件 I/O 或存储响应失败仍保留提交记录，避免重复下载已完成的有效成品。已持久化 completed 的任务不会被旧失败状态覆盖。
+
 这保证的是应用流程和进程重启后的可恢复顺序；浏览器/OS 突然断电、硬件缓存与文件系统损坏不属于已验证的 durable transaction。一个 JSON 任务快照和一个媒体文件不是跨文件事务。
 
 ## Node 宿主
@@ -157,6 +159,8 @@ console.log(result.tasks.map(({ id, status }) => ({ id, status })));
 - 新成品先写同目录临时文件，关闭同步后 rename；取消新写入保留之前的成品。
 - partial 使用真实位置写入；恢复前核对长度并 truncate，close/abort 同步并关闭文件。
 - 所有读取按 offset/length 进行，阻止文件名越界和通过文件软链接读取/写入。
+
+Node 新文件的 sync、close 或 rename 失败时会尽力删除无恢复归属的 staging 文件，保留首个错误与原成品；续传 partial 则保留供 checkpoint 恢复。
 
 `NodeTaskStore` 把任务保存在输出目录的 `.download-runtime.tasks.json`，先写临时快照并同步，再 rename。无效 schema/损坏 JSON 会报错，不能静默当空队列覆盖。仓库写操作需要由同一 `ExecutionLocks` 保护；直接调用底层 store 的嵌入方必须遵守这个约束。
 
