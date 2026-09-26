@@ -9,6 +9,7 @@ import type {
 import { estimateRemainingSeconds, fetchBinaryResource } from '../hls/download-hls';
 import { parseSidxResources } from '../mp4/sidx';
 import type { Transport } from '../network/transport';
+import { NetworkSpeedTracker } from '../network/speed-tracker';
 import type { DashMediaSource, DashResource, DashTrack } from '../../shared/media';
 
 export interface ResolvedDashTrack extends DashTrack {
@@ -191,25 +192,6 @@ export async function prepareDashDownload(
   };
 }
 
-class SpeedTracker {
-  readonly #startedAt = Date.now();
-  readonly #samples: Array<{ at: number; bytes: number }> = [{ at: this.#startedAt, bytes: 0 }];
-  totalBytes = 0;
-
-  record(bytes: number): { current: number; average: number } {
-    const now = Date.now();
-    this.totalBytes += bytes;
-    this.#samples.push({ at: now, bytes: this.totalBytes });
-    const cutoff = now - 5_000;
-    while (this.#samples.length > 2 && this.#samples[1]!.at < cutoff) this.#samples.shift();
-    const oldest = this.#samples[0]!;
-    return {
-      current: (this.totalBytes - oldest.bytes) * 1_000 / Math.max(1, now - oldest.at),
-      average: this.totalBytes * 1_000 / Math.max(1, now - this.#startedAt),
-    };
-  }
-}
-
 export async function downloadDashTrack(
   track: ResolvedDashTrack,
   writer: BinaryWriter,
@@ -228,7 +210,7 @@ export async function downloadDashTrack(
     throw new Error('A DASH track without initialization cannot have committed bytes.');
   }
 
-  const speed = new SpeedTracker();
+  const speed = new NetworkSpeedTracker();
   const progress: HlsDownloadProgress = {
     completedSegments: startSegmentIndex,
     totalSegments: track.segments.length,
@@ -240,6 +222,10 @@ export async function downloadDashTrack(
   const publish = (force = false) => {
     const now = Date.now();
     if (!force && now - lastProgressAt < 200) return;
+    const rates = speed.sample();
+    progress.currentSpeedBytesPerSecond = ['retrying', 'finalizing', 'completed'].includes(progress.phase ?? '')
+      ? 0 : rates.current;
+    progress.averageSpeedBytesPerSecond = rates.average;
     const estimate = estimateRemainingSeconds(progress);
     if (estimate === undefined || !Number.isFinite(estimate)) delete progress.estimatedSecondsRemaining;
     else progress.estimatedSecondsRemaining = estimate;
@@ -262,7 +248,6 @@ export async function downloadDashTrack(
     delete progress.currentSegmentBytesTotal;
     if (segment !== undefined) progress.currentSegment = segment;
     else delete progress.currentSegment;
-    progress.currentSpeedBytesPerSecond = 0;
     clearRetryProgress();
     publish(true);
     return fetchDashResource(
@@ -273,13 +258,11 @@ export async function downloadDashTrack(
         onChunk: ({ chunkBytes, attemptBytesReceived, contentLength }) => {
           const startedReceiving = progress.phase !== 'downloading';
           const firstReceivedBytes = chunkBytes > 0 && (progress.currentSegmentBytesReceived ?? 0) === 0;
-          const rates = speed.record(chunkBytes);
+          speed.record(chunkBytes);
           progress.phase = 'downloading';
           progress.networkBytesReceived = speed.totalBytes;
           progress.currentSegmentBytesReceived = attemptBytesReceived;
           if (contentLength !== undefined) progress.currentSegmentBytesTotal = contentLength;
-          progress.currentSpeedBytesPerSecond = rates.current;
-          progress.averageSpeedBytesPerSecond = rates.average;
           clearRetryProgress();
           publish(startedReceiving || firstReceivedBytes);
         },
@@ -304,11 +287,11 @@ export async function downloadDashTrack(
     ).then(({ bytes }) => bytes);
   };
 
+  const progressTimer = setInterval(() => publish(), 500);
   try {
     if (!initializationWritten) {
       const initialization = await download(track.initialization, 'initialization-segment');
       progress.phase = 'processing';
-      progress.currentSpeedBytesPerSecond = 0;
       publish(true);
       await writer.write(initialization);
       bytesWritten += initialization.byteLength;
@@ -319,7 +302,6 @@ export async function downloadDashTrack(
       const startedAt = Date.now();
       const bytes = await download(track.segments[index]!, 'media-segment', index + 1);
       progress.phase = 'processing';
-      progress.currentSpeedBytesPerSecond = 0;
       publish(true);
       await writer.write(bytes);
       bytesWritten += bytes.byteLength;
@@ -339,6 +321,8 @@ export async function downloadDashTrack(
   } catch (cause) {
     await writer.abort(cause);
     throw cause;
+  } finally {
+    clearInterval(progressTimer);
   }
 }
 
@@ -347,7 +331,7 @@ export async function downloadDashPlan(
   writer: BinaryWriter,
   options: DashDownloadOptions = {},
 ): Promise<void> {
-  const speed = new SpeedTracker();
+  const speed = new NetworkSpeedTracker();
   let completedSegments = 0;
   let bytesWritten = 0;
   const progress: HlsDownloadProgress = {
@@ -361,6 +345,10 @@ export async function downloadDashPlan(
   const publish = (force = false) => {
     const now = Date.now();
     if (!force && now - lastProgressAt < 200) return;
+    const rates = speed.sample();
+    progress.currentSpeedBytesPerSecond = ['retrying', 'finalizing', 'completed'].includes(progress.phase ?? '')
+      ? 0 : rates.current;
+    progress.averageSpeedBytesPerSecond = rates.average;
     const estimate = estimateRemainingSeconds(progress);
     if (estimate === undefined || !Number.isFinite(estimate)) delete progress.estimatedSecondsRemaining;
     else progress.estimatedSecondsRemaining = estimate;
@@ -383,7 +371,6 @@ export async function downloadDashPlan(
     delete progress.currentSegmentBytesTotal;
     if (segment !== undefined) progress.currentSegment = segment;
     else delete progress.currentSegment;
-    progress.currentSpeedBytesPerSecond = 0;
     clearRetryProgress();
     publish(true);
     return fetchDashResource(
@@ -394,13 +381,11 @@ export async function downloadDashPlan(
         onChunk: ({ chunkBytes, attemptBytesReceived, contentLength }) => {
           const startedReceiving = progress.phase !== 'downloading';
           const firstReceivedBytes = chunkBytes > 0 && (progress.currentSegmentBytesReceived ?? 0) === 0;
-          const rates = speed.record(chunkBytes);
+          speed.record(chunkBytes);
           progress.phase = 'downloading';
           progress.networkBytesReceived = speed.totalBytes;
           progress.currentSegmentBytesReceived = attemptBytesReceived;
           if (contentLength !== undefined) progress.currentSegmentBytesTotal = contentLength;
-          progress.currentSpeedBytesPerSecond = rates.current;
-          progress.averageSpeedBytesPerSecond = rates.average;
           clearRetryProgress();
           publish(startedReceiving || firstReceivedBytes);
         },
@@ -425,11 +410,11 @@ export async function downloadDashPlan(
     ).then(({ bytes }) => bytes);
   };
 
+  const progressTimer = setInterval(() => publish(), 500);
   try {
     for (const track of [plan.video, plan.audio]) {
       const initialization = await download(track.initialization, 'initialization-segment');
       progress.phase = 'processing';
-      progress.currentSpeedBytesPerSecond = 0;
       publish(true);
       await writer.write(initialization);
       bytesWritten += initialization.byteLength;
@@ -439,7 +424,6 @@ export async function downloadDashPlan(
         const startedAt = Date.now();
         const bytes = await download(resource, 'media-segment', segmentNumber);
         progress.phase = 'processing';
-        progress.currentSpeedBytesPerSecond = 0;
         publish(true);
         await writer.write(bytes);
         bytesWritten += bytes.byteLength;
@@ -462,5 +446,7 @@ export async function downloadDashPlan(
   } catch (cause) {
     await writer.abort(cause);
     throw cause;
+  } finally {
+    clearInterval(progressTimer);
   }
 }

@@ -1,6 +1,7 @@
 import { formatByteRate, formatBytes, formatDuration } from '../core/format';
 import type { DownloadTaskProgress } from '../shared/download-task';
 import type { MessageKey, Translator } from '../shared/i18n';
+import { useProgressSnapshot } from './use-progress-snapshot';
 
 const PHASE_LABEL_KEYS: Record<NonNullable<DownloadTaskProgress['phase']>, MessageKey> = {
   requesting: 'phaseRequesting',
@@ -51,10 +52,11 @@ export function buildProgressMetrics(
   ];
 }
 
-export function ProgressMetrics({ progress, t }: {
+export function ProgressMetrics({ progress: liveProgress, t }: {
   progress: DownloadTaskProgress;
   t: Translator;
 }) {
+  const progress = useProgressSnapshot(liveProgress);
   const metrics = buildProgressMetrics(progress, t);
   const retrying = progress.phase === 'retrying';
   const retryText = retrying

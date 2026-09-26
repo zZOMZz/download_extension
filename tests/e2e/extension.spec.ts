@@ -27,6 +27,50 @@ test('built extension discovers local HLS and downloads a validated MP4 through 
   await downloader.screenshot({ path: testInfo.outputPath('single-download.png'), fullPage: true });
 });
 
+test('fast segmented downloads show stable metric snapshots and immediate completion', async ({ context, page, media, extensionId }, testInfo) => {
+  await page.goto(`${media.origin}/fast-source.html`);
+  const popup = await openPopup(context, extensionId, page);
+  const candidate = popup.locator('.candidate').filter({ hasText: 'E2E HLS sample' });
+  await expect(candidate).toHaveCount(1);
+  const created = context.waitForEvent('page');
+  await candidate.getByRole('button', { name: 'Download', exact: true }).click();
+  const downloader = await created;
+  await downloader.waitForURL('**/downloader.html?*');
+  await downloader.getByLabel('Output format').selectOption('original');
+
+  await downloader.evaluate(() => {
+    const samples: Array<{ at: number; values: string[] }> = [];
+    Object.assign(window, { metricSamples: samples });
+    new MutationObserver(() => {
+      const values = Array.from(document.querySelectorAll('.progress-metric-value'), (node) => node.textContent ?? '');
+      if (values.length === 6 && JSON.stringify(values) !== JSON.stringify(samples.at(-1)?.values)) {
+        samples.push({ at: performance.now(), values });
+      }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
+  await downloader.getByRole('button', { name: 'Choose file & download', exact: true }).click();
+  await expect(downloader.getByText('Download complete', { exact: true })).toBeVisible();
+  await expect(downloader.locator('.progress-metric-current-rate .progress-metric-value')).toHaveText('0 B/s');
+  await expect(downloader.locator('.notice.error')).toHaveCount(0);
+  const samples = await downloader.evaluate(() =>
+    (window as unknown as { metricSamples: Array<{ at: number; values: string[] }> }).metricSamples);
+  await testInfo.attach('metric snapshots', { body: JSON.stringify(samples, null, 2), contentType: 'application/json' });
+  const active = samples.filter(({ values }) => !['Finalizing output', 'Download complete'].includes(values[0]!));
+  const firstReceiving = active.findIndex(({ values }) => !['—', '0 B/s'].includes(values[1]!));
+  expect(firstReceiving).toBeGreaterThanOrEqual(0);
+  const receiving = active.slice(firstReceiving);
+  expect(receiving.length).toBeGreaterThan(3);
+  expect(receiving.every(({ values }) => !['—', '0 B/s'].includes(values[1]!))).toBe(true);
+  // All six cards update as one snapshot at most twice a second; allow timer jitter.
+  for (let index = 1; index < active.length; index += 1) {
+    expect(active[index]!.at - active[index - 1]!.at).toBeGreaterThan(400);
+  }
+  const names = await outputNames(downloader);
+  expect(names).toEqual(['E2E HLS sample.ts']);
+  expect((await outputBytes(downloader, names[0]!)).length).toBe(media.tsBytes * 60);
+  await downloader.screenshot({ path: testInfo.outputPath('stable-progress.png'), fullPage: true });
+});
+
 test('persistent batch UI excludes a second manager and resumes saved HLS bytes after remount', async ({ context, page, media, extensionId }, testInfo) => {
   media.holdSecondSegment();
   await page.goto(media.seriesUrl);

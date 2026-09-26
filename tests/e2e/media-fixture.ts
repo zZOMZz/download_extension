@@ -21,18 +21,24 @@ export async function createMediaFixture() {
     const path = new URL(request.url ?? '/', 'http://localhost').pathname;
     requests.push(path);
     response.setHeader('Access-Control-Allow-Origin', '*');
-    if (path === '/source.html') {
+    if (path === '/source.html' || path === '/fast-source.html') {
       response.setHeader('Content-Type', 'text/html');
-      response.end('<!doctype html><title>E2E HLS sample</title><h1>Authorized local HLS fixture</h1><video src="/single.m3u8"></video><script>fetch("/single.m3u8")</script>');
+      const manifest = path === '/fast-source.html' ? '/fast.m3u8' : '/single.m3u8';
+      response.end(`<!doctype html><title>E2E HLS sample</title><h1>Authorized local HLS fixture</h1><video src="${manifest}"></video><script>fetch("${manifest}")</script>`);
     } else if (path.endsWith('.m3u8')) {
       response.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      const segments = path === '/resume.m3u8'
-        ? ['first.ts', 'held.ts'] : [path === '/episode-two.m3u8' ? 'episode-two.ts' : 'single.ts'];
+      const segments = path === '/fast.m3u8'
+        ? Array.from({ length: 60 }, (_, index) => `fast-${index}.ts`)
+        : path === '/resume.m3u8' ? ['first.ts', 'held.ts']
+          : [path === '/episode-two.m3u8' ? 'episode-two.ts' : 'single.ts'];
       response.end(`#EXTM3U\n#EXT-X-TARGETDURATION:10\n${segments.map((name) => `#EXTINF:10,\n${name}\n`).join('')}#EXT-X-ENDLIST`);
     } else if (path.endsWith('.ts')) {
       response.setHeader('Content-Type', 'video/mp2t');
       response.setHeader('Content-Length', ts.length);
-      if (path === '/held.ts' && holdSecond) {
+      if (path.startsWith('/fast-')) {
+        const timer = setTimeout(() => response.end(ts), 70);
+        response.once('close', () => clearTimeout(timer));
+      } else if (path === '/held.ts' && holdSecond) {
         held.add(response);
         response.once('close', () => held.delete(response));
       } else response.end(ts);

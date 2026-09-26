@@ -3,6 +3,7 @@ import type { DownloadTaskProgress } from '../../shared/download-task';
 import type { NetworkRequestCoordinator } from '../network/host-health';
 import { resolveHlsAes128Key } from './key-resolver';
 import { browserTransport, type Transport } from '../network/transport';
+import { NetworkSpeedTracker } from '../network/speed-tracker';
 
 export interface BinaryWriter {
   write(chunk: Uint8Array): Promise<void>;
@@ -433,26 +434,8 @@ export async function fetchTextResource(
   throw new NetworkResourceError('text', url, attemptsUsed, isTaskRecoverable(lastError), lastError);
 }
 
-class NetworkSpeedTracker {
-  private readonly startedAt = Date.now();
-  private readonly samples: Array<{ at: number; bytes: number }> = [{ at: this.startedAt, bytes: 0 }];
-  totalBytes = 0;
-
-  record(byteLength: number): { current: number; average: number } {
-    const now = Date.now();
-    this.totalBytes += byteLength;
-    this.samples.push({ at: now, bytes: this.totalBytes });
-    const cutoff = now - 5_000;
-    while (this.samples.length > 2 && this.samples[1]!.at < cutoff) this.samples.shift();
-    const oldest = this.samples[0]!;
-    return {
-      current: (this.totalBytes - oldest.bytes) * 1_000 / Math.max(1, now - oldest.at),
-      average: this.totalBytes * 1_000 / Math.max(1, now - this.startedAt),
-    };
-  }
-}
-
 export function estimateRemainingSeconds(progress: HlsDownloadProgress): number | undefined {
+  if (progress.phase === 'completed' || progress.phase === 'finalizing') return undefined;
   const speed = progress.currentSpeedBytesPerSecond || progress.averageSpeedBytesPerSecond;
   if (!speed) return undefined;
 
@@ -460,7 +443,10 @@ export function estimateRemainingSeconds(progress: HlsDownloadProgress): number 
   if (progress.completedSegments > 0) {
     const averageSegmentBytes = progress.bytesWritten / progress.completedSegments;
     remainingBytes = averageSegmentBytes * (progress.totalSegments - progress.completedSegments);
-    remainingBytes = Math.max(0, remainingBytes - (progress.currentSegmentBytesReceived ?? 0));
+    // Once committed, this segment is already included in completedSegments.
+    if ((progress.currentSegment ?? 0) > progress.completedSegments) {
+      remainingBytes = Math.max(0, remainingBytes - (progress.currentSegmentBytesReceived ?? 0));
+    }
   } else if (progress.currentSegmentBytesTotal !== undefined && progress.currentSegment !== undefined) {
     remainingBytes = Math.max(0, progress.currentSegmentBytesTotal - (progress.currentSegmentBytesReceived ?? 0));
     remainingBytes += progress.currentSegmentBytesTotal * (progress.totalSegments - progress.currentSegment);
@@ -573,6 +559,10 @@ export async function downloadHlsPlaylist(
   const publishProgress = (force = false) => {
     const now = Date.now();
     if (!force && now - lastProgressAt < 200) return;
+    const rates = speedTracker.sample();
+    progress.currentSpeedBytesPerSecond = ['retrying', 'finalizing', 'completed'].includes(progress.phase ?? '')
+      ? 0 : rates.current;
+    progress.averageSpeedBytesPerSecond = rates.average;
     const estimate = estimateRemainingSeconds(progress);
     if (estimate === undefined || !Number.isFinite(estimate)) delete progress.estimatedSecondsRemaining;
     else progress.estimatedSecondsRemaining = estimate;
@@ -640,6 +630,7 @@ export async function downloadHlsPlaylist(
     currentMapIdentity = identity;
   };
 
+  const progressTimer = setInterval(() => publishProgress(), 500);
   try {
     for (let index = startSegmentIndex; index < playlist.segments.length; index += 1) {
       const segment = playlist.segments[index]!;
@@ -648,7 +639,6 @@ export async function downloadHlsPlaylist(
       progress.currentSegment = index + 1;
       progress.currentSegmentBytesReceived = 0;
       delete progress.currentSegmentBytesTotal;
-      progress.currentSpeedBytesPerSecond = 0;
       progress.phase = 'requesting';
       clearRetryProgress();
       publishProgress(true);
@@ -658,13 +648,11 @@ export async function downloadHlsPlaylist(
         onChunk: ({ chunkBytes, attemptBytesReceived, contentLength }) => {
           const firstReceivedBytes = chunkBytes > 0 && (progress.currentSegmentBytesReceived ?? 0) === 0;
           const startedReceiving = progress.phase !== 'downloading';
-          const speed = speedTracker.record(chunkBytes);
+          speedTracker.record(chunkBytes);
           progress.phase = 'downloading';
           progress.networkBytesReceived = speedTracker.totalBytes;
           progress.currentSegmentBytesReceived = attemptBytesReceived;
           if (contentLength !== undefined) progress.currentSegmentBytesTotal = contentLength;
-          progress.currentSpeedBytesPerSecond = speed.current;
-          progress.averageSpeedBytesPerSecond = speed.average;
           clearRetryProgress();
           publishProgress(firstReceivedBytes || startedReceiving);
         },
@@ -690,7 +678,6 @@ export async function downloadHlsPlaylist(
         },
       });
       progress.phase = 'decrypting';
-      progress.currentSpeedBytesPerSecond = 0;
       clearRetryProgress();
       publishProgress(true);
       bytes = await decryptIfNeeded(bytes, segment.key, segment.sequence);
@@ -714,5 +701,7 @@ export async function downloadHlsPlaylist(
   } catch (error) {
     await writer.abort(error);
     throw error;
+  } finally {
+    clearInterval(progressTimer);
   }
 }
