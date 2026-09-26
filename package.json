@@ -15,6 +15,7 @@
   "dependencies": {
     "@wxt-dev/module-react": "1.2.2",
     "fast-xml-parser": "5.11.0",
+    "googlevideo": "4.1.1",
     "mux.js": "7.1.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",

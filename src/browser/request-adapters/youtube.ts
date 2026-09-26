@@ -1,16 +1,20 @@
 import type { MediaCandidate } from '../../shared/media';
 import { isYouTubeWatchPage } from '../../core/detection/adapters/youtube';
+import { isGoogleVideoUrl } from '../../core/site-adapters/youtube/player-response';
 import type { SiteRequestAdapter, SiteRequestRule } from './types';
 
 function validateCandidate(candidate: MediaCandidate): URL {
   let pageUrl: URL;
   try {
-    pageUrl = new URL(candidate.url);
+    pageUrl = new URL(candidate.sourcePageUrl ?? candidate.url);
   } catch {
     throw new Error('The YouTube request adapter received an invalid page URL.');
   }
   if (candidate.siteAdapterId !== 'youtube' || !isYouTubeWatchPage(pageUrl)) {
     throw new Error('The YouTube request adapter received an unrelated media candidate.');
+  }
+  if (candidate.kind === 'progressive' && !isGoogleVideoUrl(candidate.url)) {
+    throw new Error('The YouTube request adapter received an unrelated media URL.');
   }
   return pageUrl;
 }

@@ -17,7 +17,9 @@ export interface InspectedHls {
 export type HlsTextLoader = (url: string, signal?: AbortSignal) => Promise<string>;
 
 export function preferredHlsVariant(master: HlsMasterPlaylist): HlsVariant {
-  return [...master.variants].sort((left, right) => (right.bandwidth ?? 0) - (left.bandwidth ?? 0))[0]!;
+  return [...master.variants].sort((left, right) =>
+    (right.resolution?.height ?? 0) - (left.resolution?.height ?? 0) ||
+    (right.bandwidth ?? 0) - (left.bandwidth ?? 0))[0]!;
 }
 
 export function preferredHlsAudioRendition(

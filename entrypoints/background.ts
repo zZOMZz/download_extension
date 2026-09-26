@@ -19,6 +19,13 @@ import {
   listTaskDiagnosticEvents,
   removeTaskDiagnosticEvents,
 } from '~/src/background/task-diagnostics-repository';
+import {
+  acceptYoutubeSabrBridgeRequest,
+  captureYoutubeSabrContext,
+  clearYoutubeSabrContexts,
+  findYoutubeSabrContext,
+  isYoutubeSabrContextSender,
+} from '~/src/background/youtube-sabr-context';
 import { pageDiscoveryResponseSchema } from '~/src/shared/discovery';
 import {
   runtimeRequestSchema,
@@ -44,9 +51,16 @@ export default defineBackground(() => {
     (details) => {
       if (details.type === 'main_frame' && details.tabId >= 0) {
         void clearCandidates(details.tabId);
+        void clearYoutubeSabrContexts(details.tabId).catch(() => {});
       }
     },
     { urls: ['<all_urls>'], types: ['main_frame'] },
+  );
+
+  browser.webRequest.onBeforeRequest.addListener(
+    (details) => { void captureYoutubeSabrContext(details).catch(() => {}); },
+    { urls: ['https://*.googlevideo.com/videoplayback*'] },
+    ['requestBody'],
   );
 
   browser.webRequest.onHeadersReceived.addListener(
@@ -88,6 +102,7 @@ export default defineBackground(() => {
 
   browser.tabs.onRemoved.addListener((tabId) => {
     void clearCandidates(tabId);
+    void clearYoutubeSabrContexts(tabId).catch(() => {});
     void removeSiteRequestAdapterForTab(tabId);
   });
 
@@ -97,6 +112,8 @@ export default defineBackground(() => {
 
     const request = parsed.data;
     switch (request.type) {
+      case 'youtube-sabr:observe':
+        return { ok: await acceptYoutubeSabrBridgeRequest(request, sender, browser.runtime.id) };
       case 'candidate:observe': {
         const tabId = sender.tab?.id;
         if (tabId === undefined) return { ok: false, error: 'Missing sender tab.' };
@@ -123,6 +140,7 @@ export default defineBackground(() => {
         const pageUrl = new URL(browser.runtime.getURL('/downloader.html'));
         pageUrl.searchParams.set('tabId', String(request.tabId));
         pageUrl.searchParams.set('candidateId', request.candidateId);
+        if (request.videoTrackId) pageUrl.searchParams.set('videoTrackId', request.videoTrackId);
         await browser.tabs.create({ url: pageUrl.href });
         return { ok: true };
       }
@@ -136,6 +154,27 @@ export default defineBackground(() => {
         if (!candidate) return { ok: false, error: 'The media candidate has expired.' };
         await configureSiteRequestAdapterForTab(candidate, downloaderTabId);
         return { ok: true };
+      }
+      case 'youtube-sabr:context': {
+        if (!isYoutubeSabrContextSender(
+          sender,
+          browser.runtime.id,
+          browser.runtime.getURL('/downloader.html'),
+        )) {
+          return { ok: false, error: 'YouTube playback context is only available to the downloader page.' };
+        }
+        const candidate = await findCandidate(request.sourceTabId, request.candidateId);
+        if (candidate?.siteAdapterId !== 'youtube' || !candidate.youtubeSabr) {
+          return { ok: false, error: 'The YouTube media candidate has expired.' };
+        }
+        const context = await findYoutubeSabrContext(
+          request.sourceTabId,
+          candidate.youtubeSabr.serverAbrStreamingUrl,
+        );
+        if (!context) {
+          return { ok: false, error: 'The YouTube playback session is unavailable or expired. Refresh the source video page, play the video briefly, then retry the download.' };
+        }
+        return { ok: true, context };
       }
       case 'request-adapter:configure-manager': {
         const managerTabId = sender.tab?.id;

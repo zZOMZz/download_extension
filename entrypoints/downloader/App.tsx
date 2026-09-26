@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatBytes, safeFilename } from '~/src/core/format';
+import { candidateVideoQualities, selectedVideoQuality, videoQualityLabel } from '~/src/core/media-quality';
 import { ProgressMetrics } from '~/src/components/progress-metrics';
+import { BrandMark } from '~/src/components/brand-mark';
+import { LiquidShader } from '~/src/components/liquid-shader';
 import { parseDashMediaSource } from '~/src/core/protocols/dash';
 import { downloadDashPlan, preferredDashTrack, prepareDashDownload } from '~/src/core/dash/download-dash';
+import { downloadProgressiveMedia } from '~/src/core/progressive/download-progressive';
+import { downloadYouTubeSabr } from '~/src/core/site-adapters/youtube/download-sabr';
 import type { HlsRendition, HlsVariant } from '~/src/core/protocols/hls';
 import {
   downloadHlsPlaylist,
   fetchTextResource,
   validateHlsDownload,
   type HlsDownloadProgress,
+  type RandomAccessBinaryWriter,
 } from '~/src/core/hls/download-hls';
 import { inspectHlsUrl, inspectHlsVariant, type InspectedHls } from '~/src/core/hls/inspect-hls';
 import {
@@ -16,13 +22,13 @@ import {
   hlsPlaylistUsesFmp4,
 } from '~/src/core/hls/media-bundle';
 import { createHlsOutputPlan, type HlsOutputPlan } from '~/src/core/hls/output-plan';
-import { configureCandidateRequestAdapter, listTabCandidates } from '~/src/browser/runtime-client';
+import { configureCandidateRequestAdapter, getYouTubeSabrContext, listTabCandidates } from '~/src/browser/runtime-client';
 import { openOutputWriter } from '~/src/browser/output-writer';
 import { readSettings, setOutputFormat as persistOutputFormat } from '~/src/browser/settings';
 import { createHlsOutputWriter } from '~/src/browser/hls-output-writer';
 import { SeparateTrackFmp4Writer } from '~/src/browser/separate-track-fmp4-writer';
 import { createTranslator, type Translator } from '~/src/shared/i18n';
-import type { DashMediaSource, DashTrack, MediaCandidate } from '~/src/shared/media';
+import type { DashMediaSource, DashTrack, MediaCandidate, YouTubeSabrFormat } from '~/src/shared/media';
 import {
   NETWORK_PRESETS,
   outputFormatSchema,
@@ -65,12 +71,22 @@ function dashTrackLabel(track: DashTrack, t: Translator): string {
   return parts.filter(Boolean).join(' · ') || t('unknownQuality');
 }
 
-function progressPanel(progress: HlsDownloadProgress | null, t: Translator) {
+function sabrFormatLabel(format: YouTubeSabrFormat): string {
+  return [
+    format.width && format.height ? `${format.width}×${format.height}` : null,
+    format.fps ? `${format.fps} fps` : null,
+    `${Math.round((format.averageBitrate ?? format.bitrate) / 1_000)} kbps`,
+    format.audioTrack?.displayName,
+    /codecs="([^"]+)"/.exec(format.mimeType)?.[1],
+  ].filter(Boolean).join(' · ');
+}
+
+function progressPanel(progress: HlsDownloadProgress | null, t: Translator, tracks = false) {
   if (!progress) return null;
   return (
     <div className="progress-block">
       <div className="progress-copy">
-        <span>{t('segmentsProgress', { completed: progress.completedSegments, total: progress.totalSegments })}</span>
+        <span>{t(tracks ? 'tracksProgress' : 'segmentsProgress', { completed: progress.completedSegments, total: progress.totalSegments })}</span>
         <span>{formatBytes(progress.bytesWritten)}</span>
       </div>
       <progress value={progressValue(progress)} max={progress.totalSegments} />
@@ -103,11 +119,14 @@ export function App() {
   const params = useMemo(() => new URLSearchParams(location.search), []);
   const tabId = Number(params.get('tabId'));
   const candidateId = params.get('candidateId');
+  const requestedVideoTrackId = params.get('videoTrackId');
   const [candidate, setCandidate] = useState<MediaCandidate | null>(null);
   const [hls, setHls] = useState<InspectedHls | null>(null);
   const [dash, setDash] = useState<DashMediaSource | null>(null);
   const [dashVideoId, setDashVideoId] = useState('');
   const [dashAudioId, setDashAudioId] = useState('');
+  const [sabrVideoItag, setSabrVideoItag] = useState(0);
+  const [sabrAudioItag, setSabrAudioItag] = useState(0);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState<HlsDownloadProgress | null>(null);
@@ -146,18 +165,27 @@ export function App() {
         if (!Number.isInteger(tabId) || tabId < 0 || !candidateId) throw new Error(t('invalidDownloadUrl'));
         const found = (await listTabCandidates(tabId)).find((item) => item.id === candidateId);
         if (!found) throw new Error(t('candidateExpired'));
-        setCandidate(found);
         if (found.siteAdapterId) {
           await configureCandidateRequestAdapter(found.tabId, found.id);
         }
+        setCandidate(found);
         if (found.kind === 'hls') setHls(await inspectHlsUrl(found.url, loadText, controller.signal));
         else if (found.kind === 'dash') {
           const source = found.dash ?? parseDashMediaSource(await loadText(found.url, controller.signal), found.url);
           setDash(source);
-          setDashVideoId(preferredDashTrack(source, 'video')?.id ?? '');
+          setDashVideoId(selectedVideoQuality(candidateVideoQualities({ kind: 'dash', dash: source }), requestedVideoTrackId) || preferredDashTrack(source, 'video')?.id || '');
           setDashAudioId(preferredDashTrack(source, 'audio')?.id ?? '');
         }
-        else throw new Error(t('unsupportedStreamDownloader'));
+        else if (found.kind === 'sabr' && found.youtubeSabr) {
+          setSabrVideoItag(Number(selectedVideoQuality(candidateVideoQualities(found), requestedVideoTrackId)));
+          const audio = [...found.youtubeSabr.formats]
+            .filter((format) => format.mimeType.startsWith('audio/mp4'))
+            .sort((a, b) => Number(Boolean(b.audioTrack?.audioIsDefault)) - Number(Boolean(a.audioTrack?.audioIsDefault)) || b.bitrate - a.bitrate);
+          setSabrAudioItag(audio[0]?.itag ?? 0);
+          // Surface unavailable playback sessions before the user chooses a file.
+          await getYouTubeSabrContext(found.tabId, found.id);
+        }
+        else if (found.kind !== 'progressive') throw new Error(t('unsupportedStreamDownloader'));
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : t('unableInspectMedia'));
       } finally {
@@ -165,7 +193,7 @@ export function App() {
       }
     })();
     return () => controller.abort();
-  }, [candidateId, tabId]);
+  }, [candidateId, tabId, requestedVideoTrackId]);
 
   const changeVariant = async (uri: string) => {
     if (!hls?.master) return;
@@ -235,6 +263,37 @@ export function App() {
     }
   };
 
+  const startProgressiveDownload = async () => {
+    if (!candidate || candidate.kind !== 'progressive') return;
+    setError(null);
+    setProgress(null);
+    const controller = new AbortController();
+    abortController.current = controller;
+    setDownloading(true);
+    let destination: RandomAccessBinaryWriter | undefined;
+    try {
+      destination = await openOutputWriter(
+        `${safeFilename(candidate.title ?? 'video')}.mp4`,
+        'video/mp4',
+        'mp4',
+        { allowMemoryFallback: false },
+      );
+      await downloadProgressiveMedia(candidate.url, destination, {
+        signal: controller.signal,
+        networkPolicy,
+        ...(candidate.contentLength === undefined ? {} : { contentLength: candidate.contentLength }),
+        onProgress: setProgress,
+      });
+    } catch (cause) {
+      await destination?.abort(cause).catch(() => {});
+      if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
+        setError(cause instanceof Error ? cause.message : t('downloadFailed'));
+      }
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const startDashDownload = async () => {
     if (!candidate || !dash) return;
     setError(null);
@@ -244,7 +303,12 @@ export function App() {
     const controller = new AbortController();
     abortController.current = controller;
     setDownloading(true);
+    let destination: RandomAccessBinaryWriter | undefined;
     try {
+      const height = (video ?? preferredDashTrack(dash, 'video'))?.height;
+      const filename = `${safeFilename(candidate.title ?? 'video')}${height ? `-${height}p` : ''}.mp4`;
+      // Open the picker while the click still grants transient user activation.
+      destination = await openOutputWriter(filename, 'video/mp4', 'mp4');
       const plan = await prepareDashDownload(dash, {
         signal: controller.signal,
         networkPolicy,
@@ -252,9 +316,6 @@ export function App() {
         ...(video ? { video } : {}),
         ...(audio ? { audio } : {}),
       });
-      const height = plan.video.height;
-      const filename = `${safeFilename(candidate.title ?? 'video')}${height ? `-${height}p` : ''}.mp4`;
-      const destination = await openOutputWriter(filename, 'video/mp4', 'mp4');
       const writer = new SeparateTrackFmp4Writer(
         destination,
         plan.video.segments.length,
@@ -273,6 +334,41 @@ export function App() {
         onProgress: setProgress,
       });
     } catch (cause) {
+      await destination?.abort(cause).catch(() => {});
+      if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
+        setError(cause instanceof Error ? cause.message : t('downloadFailed'));
+      }
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const startSabrDownload = async () => {
+    if (!candidate?.youtubeSabr) return;
+    const source = candidate.youtubeSabr;
+    const video = source.formats.find((format) => format.itag === sabrVideoItag);
+    if (!video || !sabrAudioItag) return;
+    setError(null);
+    setProgress(null);
+    setDownloading(true);
+    const controller = new AbortController();
+    abortController.current = controller;
+    let destination: RandomAccessBinaryWriter | undefined;
+    try {
+      // Acquire the file handle during the user's click, before async session lookup.
+      destination = await openOutputWriter(
+        `${safeFilename(candidate.title ?? 'video')}-${video.height}p.mp4`,
+        'video/mp4', 'mp4', { allowMemoryFallback: false },
+      );
+      const context = await getYouTubeSabrContext(candidate.tabId, candidate.id);
+      await downloadYouTubeSabr(source, context, destination, {
+        videoItag: sabrVideoItag,
+        audioItag: sabrAudioItag,
+        signal: controller.signal,
+        onProgress: setProgress,
+      });
+    } catch (cause) {
+      await destination?.abort(cause).catch(() => {});
       if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
         setError(cause instanceof Error ? cause.message : t('downloadFailed'));
       }
@@ -303,6 +399,8 @@ export function App() {
   ) problems.push(t('mixedSeparateTrackContainers'));
   const dashVideoTracks = dash?.tracks.filter((track) => track.kind === 'video') ?? [];
   const dashAudioTracks = dash?.tracks.filter((track) => track.kind === 'audio') ?? [];
+  const videoQualities = candidateVideoQualities(dash ? { kind: 'dash', dash } : candidate ?? { kind: 'blob' });
+  const selectedQuality = videoQualities.find(({ id }) => id === (dash ? dashVideoId : String(sabrVideoItag)));
   const dashProblems: string[] = [];
   if (dash?.type === 'dynamic') dashProblems.push(t('dashLiveUnsupported'));
   if (dash?.hasContentProtection) dashProblems.push(t('dashDrmUnsupported'));
@@ -310,15 +408,89 @@ export function App() {
   if (dash && !dashAudioTracks.length) dashProblems.push(t('dashMissingAudio'));
 
   return (
-    <main>
-      <div className="brand">{t('appName')}</div>
-      <section className="panel">
-        <p className="eyebrow">{t('streamInspection')}</p>
-        <h1>{candidate?.title ?? t('mediaDownload')}</h1>
-        {candidate && <p className="source">{candidate.url}</p>}
+    <>
+      <LiquidShader />
+      <main>
+        <header className="downloader-header">
+          <BrandMark />
+          <span className="page-context">{t('mediaDownload')}</span>
+        </header>
+        <section className="panel">
+        <div className={`media-overview${candidate?.thumbnailUrl ? ' has-cover' : ''}`}>
+          {candidate?.thumbnailUrl && <div className="media-cover">
+            <img src={candidate.thumbnailUrl} alt={t('videoThumbnail')} referrerPolicy="no-referrer" />
+            {selectedQuality && <span className="cover-quality">{videoQualityLabel(selectedQuality)}</span>}
+          </div>}
+          <div className="media-overview-copy">
+            <p className="eyebrow">{t('mediaDownload')}</p>
+            <h1>{candidate?.title ?? t('mediaDownload')}</h1>
+            {videoQualities.length > 0 && <p className="selection-intro">{t('chooseDownloadQuality')}</p>}
+            {candidate && <p className="source">{candidate.sourcePageUrl ?? candidate.url}</p>}
+          </div>
+        </div>
 
         {loading && <div className="status">{t('readingManifest')}</div>}
         {error && <div className="notice error">{error}</div>}
+
+        {!loading && candidate?.kind === 'progressive' && (
+          <>
+            <div className="facts">
+              <div><span>{t('protocol')}</span><strong>MP4</strong></div>
+              <div><span>{t('outputFormat')}</span><strong>MP4</strong></div>
+            </div>
+            {progressPanel(progress, t)}
+            <div className="actions">
+              <button
+                className="primary"
+                disabled={downloading}
+                onClick={() => void startProgressiveDownload()}
+              >
+                {downloading ? t('downloadingEllipsis') : t('chooseFileDownload')}
+              </button>
+              {downloading && (
+                <button className="secondary" onClick={() => abortController.current?.abort()}>{t('cancel')}</button>
+              )}
+            </div>
+          </>
+        )}
+
+        {!loading && candidate?.kind === 'sabr' && candidate.youtubeSabr && (
+          <>
+            <div className="facts">
+              <div><span>{t('resolution')}</span><strong>{selectedQuality ? videoQualityLabel(selectedQuality) : '—'}</strong></div>
+              <div><span>{t('duration')}</span><strong>{Math.round(candidate.youtubeSabr.durationSeconds)}s</strong></div>
+              <div><span>{t('outputFormat')}</span><strong>MP4</strong></div>
+            </div>
+            {videoQualities.length > 0 && <label className="resolution-field">
+              {t('resolution')}
+              <select value={sabrVideoItag} disabled={downloading} onChange={(event) => {
+                setSabrVideoItag(Number(event.target.value)); setProgress(null); setError(null);
+              }}>
+                {videoQualities.map((quality, index) => (
+                  <option key={quality.id} value={quality.id}>{videoQualityLabel(quality)}{index === 0 ? ` · ${t('highestAvailable')}` : ''}</option>
+                ))}
+              </select>
+            </label>}
+            <label>
+              {t('audioTrack')}
+              <select value={sabrAudioItag} disabled={downloading} onChange={(event) => {
+                setSabrAudioItag(Number(event.target.value)); setProgress(null); setError(null);
+              }}>
+                {candidate.youtubeSabr.formats.filter((format) => format.mimeType.startsWith('audio/mp4')).map((format) => (
+                  <option key={`${format.itag}-${format.audioTrack?.id ?? ''}`} value={format.itag}>{sabrFormatLabel(format)}</option>
+                ))}
+              </select>
+            </label>
+            <div className="notice info">{t('dashMuxNotice')}</div>
+            {progressPanel(progress, t, true)}
+            <div className="actions">
+              <button className="primary" disabled={downloading || !sabrVideoItag || !sabrAudioItag} onClick={() => void startSabrDownload()}>
+                {downloading ? t('downloadingEllipsis') : t('chooseFileDownload')}
+              </button>
+              {downloading && <button className="secondary" onClick={() => abortController.current?.abort()}>{t('cancel')}</button>}
+            </div>
+          </>
+        )}
 
         {hls && (
           <>
@@ -329,7 +501,7 @@ export function App() {
               <div><span>{t('playlist')}</span><strong>{hls.media.endList ? 'VOD' : t('live')}</strong></div>
             </div>
 
-            {hls.master && (
+            {hls.master?.variants.some((variant) => variant.resolution) && (
               <label>
                 {t('quality')}
                 <select
@@ -420,18 +592,18 @@ export function App() {
               <div><span>{t('protection')}</span><strong>{dash.hasContentProtection ? t('detected') : t('noneDetected')}</strong></div>
             </div>
 
-            <label>
-              {t('quality')}
+            {videoQualities.length > 0 && <label className="resolution-field">
+              {t('resolution')}
               <select
                 value={dashVideoId}
                 disabled={downloading}
                 onChange={(event) => setDashVideoId(event.target.value)}
               >
-                {dashVideoTracks.map((track) => (
-                  <option value={track.id} key={track.id}>{dashTrackLabel(track, t)}</option>
+                {videoQualities.map((quality, index) => (
+                  <option value={quality.id} key={quality.id}>{videoQualityLabel(quality)}{index === 0 ? ` · ${t('highestAvailable')}` : ''}</option>
                 ))}
               </select>
-            </label>
+            </label>}
 
             <label>
               {t('audioTrack')}
@@ -474,8 +646,9 @@ export function App() {
             </div>
           </>
         )}
-      </section>
-      <p className="footnote">{t('mediaPermissionFootnote')}</p>
-    </main>
+        </section>
+        <p className="footnote">{t('mediaPermissionFootnote')}</p>
+      </main>
+    </>
   );
 }

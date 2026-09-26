@@ -1,8 +1,12 @@
 import {
   dashMediaSourceSchema,
+  youtubeSabrFormatSchema,
+  youtubeSabrSourceSchema,
   type DashByteRange,
   type DashMediaSource,
   type DashTrack,
+  type YouTubeSabrFormat,
+  type YouTubeSabrSource,
 } from '../../../shared/media';
 
 type JsonRecord = Record<string, unknown>;
@@ -10,11 +14,13 @@ type JsonRecord = Record<string, unknown>;
 export interface YouTubePlayerData {
   videoId: string;
   title: string;
+  thumbnailUrl?: string;
   status: string;
   reason?: string;
   cipheredFormats: number;
   progressive?: YouTubeProgressiveMedia;
   dash?: DashMediaSource;
+  youtubeSabr?: YouTubeSabrSource;
 }
 
 export interface YouTubeProgressiveMedia {
@@ -61,6 +67,19 @@ function numberValue(value: unknown): number | undefined {
 function positiveInteger(value: unknown): number | undefined {
   const parsed = numberValue(value);
   return parsed !== undefined && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function playerThumbnail(details: JsonRecord | undefined): string | undefined {
+  return asArray(asRecord(details?.thumbnail)?.thumbnails).map(asRecord)
+    .filter((item): item is JsonRecord => Boolean(item))
+    .sort((left, right) =>
+      (positiveInteger(right.width) ?? 0) * (positiveInteger(right.height) ?? 0) -
+      (positiveInteger(left.width) ?? 0) * (positiveInteger(left.height) ?? 0))
+    .map((thumbnail) => text(thumbnail.url))
+    .find((url) => {
+      if (!url) return false;
+      try { return new URL(url).protocol === 'https:'; } catch { return false; }
+    });
 }
 
 export function isGoogleVideoUrl(rawUrl: string): boolean {
@@ -135,10 +154,13 @@ function removeRawQueryParameter(rawUrl: string, parameter: string): string {
   return `${prefix}${parts.length ? `?${parts.join('&')}` : ''}${hash}`;
 }
 
-function reusableObservedUrl(rawUrl: string): string | undefined {
+function reusableMediaUrl(rawUrl: string): string | undefined {
   if (!isGoogleVideoUrl(rawUrl)) return undefined;
   const url = new URL(rawUrl);
-  const signedParameters = new Set((url.searchParams.get('sparams') ?? '').split(',').filter(Boolean));
+  const signedParameters = new Set([
+    ...(url.searchParams.get('sparams') ?? '').split(','),
+    ...(url.searchParams.get('lsparams') ?? '').split(','),
+  ]);
   if (url.searchParams.has('range')) {
     if (signedParameters.has('range')) return undefined;
     return removeRawQueryParameter(url.href, 'range');
@@ -149,11 +171,27 @@ function reusableObservedUrl(rawUrl: string): string | undefined {
 function observedUrlsByIdentity(rawUrls: readonly string[]): Map<string, string> {
   const result = new Map<string, string>();
   for (const rawUrl of rawUrls) {
-    const reusable = reusableObservedUrl(rawUrl);
+    const reusable = reusableMediaUrl(rawUrl);
     const identity = reusable ? playbackIdentity(reusable) : undefined;
     if (identity && reusable) result.set(identity, reusable);
   }
   return result;
+}
+
+function playableFormatUrl(
+  format: JsonRecord,
+  observedUrls: ReadonlyMap<string, string>,
+): { url?: string; ciphered: boolean } {
+  const base = formatBaseUrl(format);
+  if (!base.url) return base;
+  const observed = observedUrls.get(playbackIdentity(base.url) ?? '');
+  if (observed) return { url: observed, ciphered: base.ciphered };
+  // The player must resolve signature ciphers and transform n before a URL is reusable.
+  if (base.ciphered || new URL(base.url).searchParams.has('n')) {
+    return { ciphered: base.ciphered };
+  }
+  const url = reusableMediaUrl(base.url);
+  return { ...(url ? { url } : {}), ciphered: base.ciphered };
 }
 
 function mimeDetails(value: unknown): { kind: DashTrack['kind']; mimeType: string; codecs?: string } | undefined {
@@ -168,7 +206,10 @@ function mimeDetails(value: unknown): { kind: DashTrack['kind']; mimeType: strin
   };
 }
 
-function progressiveFormat(value: unknown): YouTubeProgressiveMedia | undefined {
+function progressiveFormat(
+  value: unknown,
+  observedUrls: ReadonlyMap<string, string>,
+): YouTubeProgressiveMedia | undefined {
   const format = asRecord(value);
   if (!format || asArray(format.drmFamilies).length || asArray(format.licenseInfos).length) {
     return undefined;
@@ -180,7 +221,7 @@ function progressiveFormat(value: unknown): YouTubeProgressiveMedia | undefined 
     : undefined;
   const codecs = mime?.[1];
   const codecNames = codecs?.toLowerCase() ?? '';
-  const url = googleVideoUrl(format.url);
+  const { url } = playableFormatUrl(format, observedUrls);
   if (!id || !mime || !url || !codecNames.includes('avc1') || !codecNames.includes('mp4a')) {
     return undefined;
   }
@@ -212,15 +253,11 @@ function parseTrack(
   const mime = mimeDetails(format.mimeType);
   const initializationRange = byteRange(format.initRange);
   const indexRange = byteRange(format.indexRange);
-  const base = formatBaseUrl(format);
+  const base = playableFormatUrl(format, observedUrls);
   if (!id || !mime || !initializationRange || !indexRange || !base.url) {
     return { ciphered: base.ciphered };
   }
-  const observed = observedUrls.get(playbackIdentity(base.url) ?? '');
-  const baseUrl = observed ?? base.url;
-  if ((base.ciphered || new URL(baseUrl).searchParams.has('n')) && !observed) {
-    return { ciphered: base.ciphered };
-  }
+  const baseUrl = base.url;
 
   const bandwidth = positiveInteger(format.bitrate ?? format.averageBitrate);
   const width = positiveInteger(format.width);
@@ -245,6 +282,57 @@ function parseTrack(
   } catch {
     return { ciphered: base.ciphered };
   }
+}
+
+function sabrFormat(value: unknown, durationSeconds: number): YouTubeSabrFormat | undefined {
+  const format = asRecord(value);
+  if (!format || asArray(format.drmFamilies).length || asArray(format.licenseInfos).length) {
+    return undefined;
+  }
+  const audioTrack = asRecord(format.audioTrack);
+  const result = youtubeSabrFormatSchema.safeParse({
+    itag: positiveInteger(format.itag),
+    mimeType: text(format.mimeType),
+    lastModified: stringValue(format.lastModified),
+    bitrate: positiveInteger(format.bitrate ?? format.averageBitrate),
+    approxDurationMs: positiveInteger(format.approxDurationMs) ?? durationSeconds * 1_000,
+    width: positiveInteger(format.width),
+    height: positiveInteger(format.height),
+    fps: positiveInteger(format.fps),
+    averageBitrate: positiveInteger(format.averageBitrate),
+    contentLength: positiveInteger(format.contentLength),
+    xtags: text(format.xtags),
+    ...(text(audioTrack?.id) ? {
+      audioTrack: {
+        id: text(audioTrack?.id),
+        displayName: text(audioTrack?.displayName),
+        ...(typeof audioTrack?.audioIsDefault === 'boolean'
+          ? { audioIsDefault: audioTrack.audioIsDefault }
+          : {}),
+      },
+    } : {}),
+  });
+  return result.success ? result.data : undefined;
+}
+
+function sabrSource(
+  streamingData: JsonRecord | undefined,
+  videoId: string,
+  durationSeconds: number | undefined,
+): YouTubeSabrSource | undefined {
+  if (!streamingData || !durationSeconds || durationSeconds <= 0) return undefined;
+  const formats = asArray(streamingData.adaptiveFormats)
+    .map((format) => sabrFormat(format, durationSeconds))
+    .filter((format): format is YouTubeSabrFormat => Boolean(format));
+  if (!formats.some(({ mimeType }) => mimeType.startsWith('video/')) ||
+      !formats.some(({ mimeType }) => mimeType.startsWith('audio/'))) return undefined;
+  const result = youtubeSabrSourceSchema.safeParse({
+    videoId,
+    durationSeconds,
+    serverAbrStreamingUrl: text(streamingData.serverAbrStreamingUrl),
+    formats,
+  });
+  return result.success ? result.data : undefined;
 }
 
 function jsonObjectAfterMarker(source: string, marker: string): JsonRecord | undefined {
@@ -303,26 +391,28 @@ function parsePlayerResponse(
   const playability = asRecord(response.playabilityStatus);
   const videoId = text(details?.videoId);
   const title = text(details?.title);
+  const thumbnailUrl = playerThumbnail(details);
   const status = text(playability?.status);
   if (!videoId || !title || !status || (options.expectedVideoId && videoId !== options.expectedVideoId)) {
     return undefined;
   }
   const streamingData = asRecord(response.streamingData);
-  const progressive = asArray(streamingData?.formats)
-    .map(progressiveFormat)
+  const observed = observedUrlsByIdentity(options.observedMediaUrls ?? []);
+  const duration = numberValue(details?.lengthSeconds);
+  const isLive = details?.isLiveContent === true;
+  const canDownload = status === 'OK' && !isLive;
+  const progressive = asArray(canDownload ? streamingData?.formats : undefined)
+    .map((format) => progressiveFormat(format, observed))
     .filter((format): format is YouTubeProgressiveMedia => Boolean(format))
     .sort((left, right) =>
       (right.height ?? 0) - (left.height ?? 0) ||
       (right.bandwidth ?? 0) - (left.bandwidth ?? 0))[0];
-  const observed = observedUrlsByIdentity(options.observedMediaUrls ?? []);
   const parsedTracks = asArray(streamingData?.adaptiveFormats).map((format) => parseTrack(format, observed));
   const tracks = parsedTracks.flatMap(({ track }) => track ? [track] : []);
   const cipheredFormats = parsedTracks.filter(({ ciphered }) => ciphered).length;
-  const duration = numberValue(details?.lengthSeconds);
-  const isLive = details?.isLiveContent === true;
   const hasVideo = tracks.some(({ kind }) => kind === 'video');
   const hasAudio = tracks.some(({ kind }) => kind === 'audio');
-  const dash = status === 'OK' && !isLive && hasVideo && hasAudio
+  const dash = canDownload && hasVideo && hasAudio
     ? dashMediaSourceSchema.parse({
         type: 'static',
         ...(duration === undefined || duration < 0 ? {} : { durationSeconds: duration }),
@@ -330,15 +420,18 @@ function parsePlayerResponse(
         tracks,
       })
     : undefined;
+  const youtubeSabr = canDownload ? sabrSource(streamingData, videoId, duration) : undefined;
   const reason = text(playability?.reason);
   return {
     videoId,
     title,
+    ...(thumbnailUrl ? { thumbnailUrl } : {}),
     status,
     ...(reason ? { reason } : {}),
     cipheredFormats,
     ...(progressive ? { progressive } : {}),
     ...(dash ? { dash } : {}),
+    ...(youtubeSabr ? { youtubeSabr } : {}),
   };
 }
 
@@ -357,21 +450,40 @@ export function parseYouTubePlayerResponseDocument(
   const observedMediaUrls = options.observedMediaUrls ?? document.defaultView?.performance
     .getEntriesByType('resource')
     .map(({ name }) => name) ?? [];
-  for (const script of Array.from(document.querySelectorAll('script')).reverse()) {
-    if ((script as HTMLScriptElement).dataset?.openMediaDownloaderYoutubePlayer !== undefined) {
+  let fallback: YouTubePlayerData | undefined;
+  let progressive: YouTubePlayerData | undefined;
+  let sabr: YouTubePlayerData | undefined;
+  const bridgeElements = new Set(Array.from(document.querySelectorAll(
+    '[data-open-media-downloader-youtube-player]',
+  )).reverse());
+  const sources = new Set([
+    ...bridgeElements,
+    ...Array.from(document.querySelectorAll('script')).reverse(),
+  ]);
+  for (const element of sources) {
+    let parsed: YouTubePlayerData | undefined;
+    if (bridgeElements.has(element)) {
       try {
-        const response = asRecord(JSON.parse(script.textContent ?? ''));
-        const parsed = response ? parsePlayerResponse(response, { ...options, observedMediaUrls }) : undefined;
-        if (parsed) return parsed;
+        const response = asRecord(JSON.parse(element.textContent ?? ''));
+        parsed = response ? parsePlayerResponse(response, {
+          ...options,
+          observedMediaUrls: [
+            ...asArray(response.resolvedMediaUrls).filter((url): url is string => typeof url === 'string'),
+            ...observedMediaUrls,
+          ],
+        }) : undefined;
       } catch {
         // Fall through to regular page scripts when the bridge payload is incomplete.
       }
     }
-    const parsed = parseYouTubePlayerResponse(script.textContent ?? '', {
+    parsed ??= parseYouTubePlayerResponse(element.textContent ?? '', {
       ...options,
       observedMediaUrls,
     });
-    if (parsed) return parsed;
+    if (parsed?.dash) return parsed;
+    if (parsed?.youtubeSabr) sabr ??= parsed;
+    if (parsed?.progressive) progressive ??= parsed;
+    fallback ??= parsed;
   }
-  return undefined;
+  return sabr ?? progressive ?? fallback;
 }

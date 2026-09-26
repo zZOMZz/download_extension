@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { browser } from 'wxt/browser';
 import { mediaCandidateSchema } from '~/src/shared/media';
 import type { MediaCandidate, RuntimeRequest } from '~/src/shared/media';
+import type { YouTubeSabrDownloadContext } from '~/src/core/site-adapters/youtube/download-sabr';
 import { pageDiscoveryResponseSchema, type DiscoveredMediaItem } from '~/src/shared/discovery';
 import { downloadTaskSchema, type DownloadTask } from '~/src/shared/download-task';
 import type { OutputFormat } from '~/src/shared/settings';
@@ -31,6 +32,40 @@ const taskDiagnosticsResponseSchema = z.object({
   ok: z.literal(true),
   events: taskDiagnosticEventSchema.array(),
 });
+
+const sabrContextResponseSchema = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    context: z.object({
+      serverAbrStreamingUrl: z.string().url(),
+      videoPlaybackUstreamerConfig: z.string().min(1),
+      poToken: z.string().optional(),
+      clientInfo: z.object({
+        clientName: z.number().optional(),
+        clientVersion: z.string().optional(),
+      }).passthrough().optional(),
+    }),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export async function getYouTubeSabrContext(
+  sourceTabId: number,
+  candidateId: string,
+): Promise<YouTubeSabrDownloadContext> {
+  const response: unknown = await browser.runtime.sendMessage({
+    type: 'youtube-sabr:context', sourceTabId, candidateId,
+  } satisfies RuntimeRequest);
+  const parsed = sabrContextResponseSchema.parse(response);
+  if (!parsed.ok) throw new Error(parsed.error);
+  const { context } = parsed;
+  return {
+    serverAbrStreamingUrl: context.serverAbrStreamingUrl,
+    videoPlaybackUstreamerConfig: context.videoPlaybackUstreamerConfig,
+    ...(context.poToken ? { poToken: context.poToken } : {}),
+    ...(context.clientInfo ? { clientInfo: context.clientInfo } : {}),
+  };
+}
 
 export async function listTabCandidates(tabId: number): Promise<MediaCandidate[]> {
   const response: unknown = await browser.runtime.sendMessage({

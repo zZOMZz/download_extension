@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   inspectHlsUrl,
   preferredHlsAudioRendition,
+  preferredHlsVariant,
 } from '../src/core/hls/inspect-hls';
 import { combinedHlsMediaPlaylist } from '../src/core/hls/media-bundle';
 import { createHlsOutputPlan } from '../src/core/hls/output-plan';
@@ -10,6 +11,19 @@ import { parseHlsPlaylist } from '../src/core/protocols/hls';
 const MASTER_URL = 'https://cdn.example/show/master.m3u8';
 
 describe('HLS inspection with rendition groups', () => {
+  it('defaults to the highest resolution and falls back to bitrate when resolutions are absent', () => {
+    const parsed = parseHlsPlaylist(`#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=12000000,RESOLUTION=1920x1080
+video/1080.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=3840x2160
+video/2160.m3u8`, MASTER_URL);
+    if (parsed.type !== 'master') throw new Error('Expected a master playlist.');
+
+    expect(preferredHlsVariant(parsed).uri).toBe('https://cdn.example/show/video/2160.m3u8');
+    for (const variant of parsed.variants) delete variant.resolution;
+    expect(preferredHlsVariant(parsed).uri).toBe('https://cdn.example/show/video/1080.m3u8');
+  });
+
   it('loads the default external audio rendition alongside the preferred video variant', async () => {
     const resources = new Map([
       [MASTER_URL, `#EXTM3U

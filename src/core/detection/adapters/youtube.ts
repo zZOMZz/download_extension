@@ -57,8 +57,21 @@ export const youtubeDetectionAdapter: MediaDetectionAdapter = {
         source: 'dom',
         url: pageUrl.href,
         title: player.title,
+        ...(player.thumbnailUrl ? { thumbnailUrl: player.thumbnailUrl } : {}),
         siteAdapterId: 'youtube',
         dash: player.dash,
+      }];
+    }
+    if (player.youtubeSabr) {
+      return [{
+        kind: 'sabr',
+        source: 'dom',
+        url: pageUrl.href,
+        sourcePageUrl: pageUrl.href,
+        title: player.title,
+        ...(player.thumbnailUrl ? { thumbnailUrl: player.thumbnailUrl } : {}),
+        siteAdapterId: 'youtube',
+        youtubeSabr: player.youtubeSabr,
       }];
     }
     if (!player.progressive) return [];
@@ -67,6 +80,9 @@ export const youtubeDetectionAdapter: MediaDetectionAdapter = {
       source: 'dom',
       url: player.progressive.url,
       title: player.title,
+      ...(player.thumbnailUrl ? { thumbnailUrl: player.thumbnailUrl } : {}),
+      siteAdapterId: 'youtube',
+      sourcePageUrl: pageUrl.href,
       mimeType: player.progressive.mimeType,
       ...(player.progressive.contentLength === undefined
         ? {}

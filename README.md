@@ -76,16 +76,39 @@ that ignores `Range` cannot make the extension buffer the entire source file in
 memory.
 
 The YouTube detection adapter is limited to individual watch pages. It reads
-the current non-DRM MP4 track metadata from the page player and waits until
-playback exposes signed `googlevideo.com` video and audio URLs, then hands the
-tracks to the generic DASH pipeline. When YouTube exposes only a server-side ABR
-(SABR) endpoint instead of per-track URLs, the adapter falls back to the signed,
-muxed MP4 format in the same player response. A YouTube-only main-world bridge
-keeps the metadata current across same-page navigation. Request-header rules are
-scoped to the generated downloader tab and Google Video domains. The adapter
-does not implement SABR demultiplexing, signature deciphering, DRM bypass,
-playlist discovery, or background account access. If no candidate appears,
-start playback and reopen the popup.
+the current non-DRM MP4 metadata and combines it with signed `googlevideo.com`
+URLs from playback. Separate video and audio tracks use the generic DASH
+pipeline. When SABR hides per-track URLs, the adapter offers the available MP4
+video and audio formats through a SABR downloader, including native 2160p AV1
+when provided by the video. The downloader defaults to the highest available
+MP4 resolution and keeps the selected formats fixed. The main-world bridge
+publishes metadata through an inert hidden element, compatible with YouTube's
+Trusted Types policy.
+
+The download picker shows the video's cover, title, and available resolutions,
+with the highest selected by default. Adapters without resolution metadata
+do not show a resolution selector.
+
+For an MP4 URL with an unresolved `n` parameter, the bridge locates the URL class
+in the active player's source and calls the already loaded player's converter.
+It does not evaluate downloaded source or hardcode obfuscated function names.
+Unresolved URLs are not offered for download. Player metadata and candidates
+remain current across playback updates and same-page navigation. YouTube
+MP4, DASH, and SABR downloads use a downloader tab with scoped request-header rules;
+MP4 bytes stream directly to the selected file with progress and cancellation.
+
+SABR downloads reuse the current watch page's actual GoogleVideo request context.
+The extension observes only playback POST bodies, matches them to the current
+video's media identity, and keeps the short-lived context in session storage.
+It does not read browser cookies or generate an independent login session. Keep
+the source video open; if its playback context has expired, play or reload it
+before retrying. The `googlevideo` protocol library separates audio and video;
+the extension streams the original MP4 samples into one file without re-encoding.
+
+WebM-only formats, DRM, live SABR streams, independent signature deciphering,
+and playlist downloads are not supported. The muxed MP4 fallback (often 360p)
+remains available when neither DASH nor usable SABR metadata is exposed.
+Changes to YouTube's internal protocol can require an adapter update.
 
 ## HLS site adapters
 

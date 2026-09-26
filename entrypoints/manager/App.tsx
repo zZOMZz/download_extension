@@ -35,6 +35,8 @@ import { buildTaskDiagnosticReport } from '~/src/core/diagnostics/task-report';
 import { resolveDiscoveredMedia } from '~/src/core/discovery/registry';
 import { formatBytes, formatDuration, safeFilename } from '~/src/core/format';
 import { ProgressMetrics } from '~/src/components/progress-metrics';
+import { BrandMark } from '~/src/components/brand-mark';
+import { LiquidShader } from '~/src/components/liquid-shader';
 import {
   fetchTextResource,
   isRecoverableNetworkError,
@@ -870,13 +872,11 @@ export function App() {
   const discoveredDashOnly = discovered.length > 0 && discovered.every(({ mediaKind }) => mediaKind === 'dash');
 
   return (
-    <main>
+    <>
+      <LiquidShader />
+      <main>
       <header className="hero">
-        <div>
-          <p className="eyebrow">{t('persistentBatchQueue')}</p>
-          <h1>{t('downloadManager')}</h1>
-          <p className="lede">{t('managerDescription')}</p>
-        </div>
+        <BrandMark />
         <div className="hero-actions">
           <button className="secondary" onClick={() => void chooseDirectory()} disabled={running}>
             {directory
@@ -895,6 +895,28 @@ export function App() {
           )}
         </div>
       </header>
+
+      <section className="queue-overview" aria-label={t('downloadQueue')}>
+        <div className="queue-heading">
+          <p className="eyebrow">{t('persistentBatchQueue')}</p>
+          <h1>{t('downloadQueue')}</h1>
+          <p className="lede">{t('managerDescription')}</p>
+        </div>
+        <div className="queue-counts">
+          <div className="queue-count">
+            <strong>{activeCount}</strong>
+            <span>{t('statusDownloading')}</span>
+          </div>
+          <div className="queue-count">
+            <strong>{queuedCount}</strong>
+            <span>{t('statusQueued')}</span>
+          </div>
+          <div className="queue-count">
+            <strong>{completedCount}</strong>
+            <span>{t('statusCompleted')}</span>
+          </div>
+        </div>
+      </section>
 
       {error && <div className="notice error">{error}</div>}
       {summary && <div className="notice info">{summary}</div>}
@@ -964,7 +986,7 @@ export function App() {
         </section>
       )}
 
-      <section className="panel">
+      <section className="panel task-panel">
         <div className="section-heading">
           <div>
             <p className="eyebrow">{t('tasks')}</p>
@@ -1100,10 +1122,11 @@ export function App() {
 
         {tasks.length === 0 && <div className="empty">{t('noBatchTasks')}</div>}
         <div className="task-list">
-          {tasks.map((task) => {
+          {tasks.map((task, index) => {
             const mediaKind = taskMediaKind(task);
             return (
             <article className="task" key={task.id}>
+              <span className="task-index" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
               <div className="task-copy">
                 <div className="task-title">
                   <strong>{task.source.title}</strong>
@@ -1208,6 +1231,7 @@ export function App() {
       </section>
 
       <p className="footnote">{t('taskFootnote')}</p>
-    </main>
+      </main>
+    </>
   );
 }

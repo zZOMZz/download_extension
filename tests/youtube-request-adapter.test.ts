@@ -49,4 +49,41 @@ describe('YouTube request adapter', () => {
       siteAdapterId: 'other-site',
     }), 42, 'extension-id', 10_000_042)).toThrow(/unrelated/i);
   });
+
+  it('uses the watch page as Referer for a progressive Google Video candidate', () => {
+    const sourcePageUrl = 'https://www.youtube.com/watch?v=GwUwyWGHmGY';
+    const rule = createYouTubeSessionRule(candidate({
+      kind: 'progressive',
+      url: 'https://rr1.googlevideo.com/videoplayback?itag=18',
+      sourcePageUrl,
+    }), 42, 'extension-id', 10_000_042);
+
+    expect(rule.action.requestHeaders).toContainEqual({
+      header: 'Referer', operation: 'set', value: sourcePageUrl,
+    });
+    expect(rule.condition).toMatchObject({
+      tabIds: [42],
+      initiatorDomains: ['extension-id'],
+      requestDomains: ['googlevideo.com'],
+    });
+  });
+
+  it('rejects progressive candidates without a genuine watch page or Google Video target', () => {
+    for (const overrides of [
+      { sourcePageUrl: 'https://youtube.com.evil.example/watch?v=GwUwyWGHmGY' },
+      { url: 'https://googlevideo.com.evil.example/videoplayback' },
+      { url: 'http://rr1.googlevideo.com/videoplayback' },
+    ]) {
+      expect(() => createYouTubeSessionRule(candidate({
+        kind: 'progressive',
+        url: 'https://rr1.googlevideo.com/videoplayback?itag=18',
+        sourcePageUrl: 'https://www.youtube.com/watch?v=GwUwyWGHmGY',
+        ...overrides,
+      }), 42, 'extension-id', 10_000_042)).toThrow(/unrelated/i);
+    }
+    expect(() => createYouTubeSessionRule(candidate({
+      kind: 'progressive',
+      url: 'https://rr1.googlevideo.com/videoplayback?itag=18',
+    }), 42, 'extension-id', 10_000_042)).toThrow(/unrelated/i);
+  });
 });

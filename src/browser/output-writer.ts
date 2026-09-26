@@ -74,9 +74,15 @@ export async function openOutputWriter(
   filename: string,
   mimeType: string,
   extension: string,
+  options: { allowMemoryFallback?: boolean } = {},
 ): Promise<RandomAccessBinaryWriter> {
   const picker = (window as SavePickerWindow).showSaveFilePicker;
-  if (!picker) return new MemoryWriter(filename, mimeType);
+  if (!picker) {
+    if (options.allowMemoryFallback === false) {
+      throw new Error('This download requires a browser with streaming file save support.');
+    }
+    return new MemoryWriter(filename, mimeType);
+  }
 
   const handle = await picker({
     suggestedName: filename,

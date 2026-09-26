@@ -1,5 +1,7 @@
 import { browser } from 'wxt/browser';
 import { classifyMediaResource } from '~/src/core/detection/classify-media';
+import { createAdapterObservationReporter } from '~/src/core/detection/adapter-observations';
+import { readYouTubeSabrRequestMessage } from '~/src/core/site-adapters/youtube/sabr-request-observer';
 import {
   detectAdapterMedia,
   detectionAdapterClaimsResource,
@@ -13,9 +15,11 @@ import {
 } from '~/src/shared/media';
 
 const observed = new Set<string>();
-const adapterDetectedPages = new Set<string>();
+const reportAdapterObservations = createAdapterObservationReporter((candidate) =>
+  browser.runtime.sendMessage({ type: 'candidate:observe', candidate }));
 const adapterObservedResources = new Set<string>();
 const MAX_ADAPTER_RESOURCE_URLS = 256;
+const ADAPTER_STATE_SELECTOR = 'script, [data-open-media-downloader-youtube-player]';
 let adapterResourcePage = location.href;
 
 function refreshAdapterResourcePage(): void {
@@ -82,12 +86,10 @@ function scanDetectionAdapters(): void {
   } catch {
     return;
   }
-  if (adapterDetectedPages.has(pageUrl.href)) return;
   const candidates = detectAdapterMedia(document, pageUrl, {
     observedResourceUrls: [...adapterObservedResources],
   });
-  if (candidates.length) adapterDetectedPages.add(pageUrl.href);
-  for (const candidate of candidates) reportObservation(candidate);
+  reportAdapterObservations(pageUrl.href, candidates);
 }
 
 function scanMediaElements(root: ParentNode = document): void {
@@ -110,6 +112,12 @@ export default defineContentScript({
   matches: ['http://*/*', 'https://*/*'],
   runAt: 'document_start',
   main() {
+    window.addEventListener('message', (event) => {
+      const observation = readYouTubeSabrRequestMessage(event, window, location.href);
+      if (observation) {
+        void browser.runtime.sendMessage({ type: 'youtube-sabr:observe', ...observation }).catch(() => {});
+      }
+    });
     browser.runtime.onMessage.addListener(async (message: unknown) => {
       const resourceObservation = adapterResourceObservationSchema.safeParse(message);
       if (resourceObservation.success) {
@@ -155,9 +163,15 @@ export default defineContentScript({
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', scanDetectionAdapters, { once: true });
       }
+      document.addEventListener('yt-navigate-finish', scanDetectionAdapters);
+      window.addEventListener('popstate', scanDetectionAdapters);
 
       new MutationObserver((mutations) => {
+        let adapterStateChanged = false;
         for (const mutation of mutations) {
+          if (mutation.target instanceof Element && mutation.target.matches(ADAPTER_STATE_SELECTOR)) {
+            adapterStateChanged = true;
+          }
           if (mutation.type === 'attributes' && mutation.target instanceof HTMLMediaElement) {
             scanMediaElements(mutation.target.parentNode ?? document);
           }
@@ -165,10 +179,13 @@ export default defineContentScript({
             if (node instanceof Element) {
               if (node.matches('video, audio, source')) scanMediaElements(node.parentNode ?? document);
               else scanMediaElements(node);
-              if (node.matches('script') || node.querySelector('script')) scanDetectionAdapters();
+              if (node.matches(ADAPTER_STATE_SELECTOR) || node.querySelector(ADAPTER_STATE_SELECTOR)) {
+                adapterStateChanged = true;
+              }
             }
           }
         }
+        if (adapterStateChanged) scanDetectionAdapters();
       }).observe(document.documentElement, {
         attributes: true,
         attributeFilter: ['src'],

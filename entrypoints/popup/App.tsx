@@ -1,28 +1,34 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { displayUrl, formatBytes } from '~/src/core/format';
+import { candidateVideoQualities, selectedVideoQuality, videoQualityLabel } from '~/src/core/media-quality';
+import { visibleMediaCandidates } from '~/src/core/detection/present-candidates';
 import { supportsSiteDiscovery } from '~/src/core/discovery/registry';
 import { listTabCandidates, runRuntimeAction } from '~/src/browser/runtime-client';
 import { readSettings, setOutputFormat } from '~/src/browser/settings';
 import { createTranslator, type MessageKey } from '~/src/shared/i18n';
 import type { MediaCandidate } from '~/src/shared/media';
 import { outputFormatSchema, type AppLanguage, type OutputFormat } from '~/src/shared/settings';
+import { BrandMark } from '~/src/components/brand-mark';
 
 const KIND_LABEL_KEYS: Record<MediaCandidate['kind'], MessageKey> = {
   progressive: 'kindProgressive',
   hls: 'kindHls',
   dash: 'kindDash',
+  sabr: 'kindSabr',
   blob: 'kindBlob',
 };
 
 export function App() {
   const [tabId, setTabId] = useState<number | null>(null);
   const [candidates, setCandidates] = useState<MediaCandidate[]>([]);
+  const visibleCandidates = useMemo(() => visibleMediaCandidates(candidates), [candidates]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [language, setLanguage] = useState<AppLanguage>('en');
   const [outputFormat, setOutputFormatState] = useState<OutputFormat>('mp4');
   const [supportsBatchDiscovery, setSupportsBatchDiscovery] = useState(false);
+  const [selectedQualities, setSelectedQualities] = useState<Record<string, string>>({});
   const t = useMemo(() => createTranslator(language), [language]);
 
   const refresh = useCallback(async (explicitTabId?: number) => {
@@ -76,17 +82,19 @@ export function App() {
   const act = async (candidate: MediaCandidate) => {
     try {
       setError(null);
-      if (candidate.kind === 'progressive') {
+      if (candidate.kind === 'progressive' && !candidate.siteAdapterId) {
         await runRuntimeAction({
           type: 'download:direct',
           tabId: candidate.tabId,
           candidateId: candidate.id,
         });
       } else {
+        const videoTrackId = selectedVideoQuality(candidateVideoQualities(candidate), selectedQualities[candidate.id]);
         await runRuntimeAction({
           type: 'downloader:open',
           tabId: candidate.tabId,
           candidateId: candidate.id,
+          ...(videoTrackId ? { videoTrackId } : {}),
         });
         window.close();
       }
@@ -126,30 +134,19 @@ export function App() {
 
   return (
     <main>
-      <header>
-        <div>
-          <p className="eyebrow">{t('authorizedMediaOnly')}</p>
-          <h1>{t('mediaFound')}</h1>
-        </div>
-        {candidates.length > 0 && <button className="quiet" onClick={() => void clear()}>{t('clear')}</button>}
+      <header className="popup-header">
+        <BrandMark compact />
+        {visibleCandidates.length > 0 && <button className="quiet" onClick={() => void clear()}>{t('clear')}</button>}
       </header>
 
+      <div className="popup-intro">
+        <p className="eyebrow">{t('authorizedMediaOnly')}</p>
+        <h1>{t('mediaFound')}</h1>
+      </div>
+
       {error && <div className="notice error">{error}</div>}
-      <section className="batch-entry">
-        <div>
-          <strong>{supportsBatchDiscovery ? t('seriesDiscoveryAvailable') : t('downloadQueue')}</strong>
-          <span>
-            {supportsBatchDiscovery
-              ? t('scanSeriesDescription')
-              : t('queueDescription')}
-          </span>
-        </div>
-        <button onClick={() => void openManager()}>
-          {supportsBatchDiscovery ? t('scanBatchDownload') : t('openManager')}
-        </button>
-      </section>
       {loading && <div className="empty">{t('scanningPage')}</div>}
-      {!loading && candidates.length === 0 && (
+      {!loading && visibleCandidates.length === 0 && (
         <div className="empty">
           <strong>{t('noMediaDetected')}</strong>
           <span>{t('startPlaybackHint')}</span>
@@ -157,25 +154,45 @@ export function App() {
       )}
 
       <section className="candidate-list">
-        {candidates.map((candidate) => {
+        {visibleCandidates.map((candidate) => {
           const disabled = candidate.kind === 'blob';
+          const qualities = candidateVideoQualities(candidate);
+          const selectedQuality = selectedVideoQuality(qualities, selectedQualities[candidate.id]);
+          const displayedQuality = qualities.find(({ id }) => id === selectedQuality);
           return (
             <article className="candidate" key={candidate.id}>
+              {candidate.thumbnailUrl && <div className="candidate-cover">
+                <img src={candidate.thumbnailUrl} alt={t('videoThumbnail')} loading="lazy" referrerPolicy="no-referrer" />
+                {displayedQuality && <span className="cover-quality">{videoQualityLabel(displayedQuality)}</span>}
+              </div>}
+              <div className="candidate-body">
               <div className="candidate-heading">
                 <span className={`kind kind-${candidate.kind}`}>{t(KIND_LABEL_KEYS[candidate.kind])}</span>
                 {formatBytes(candidate.contentLength) && <span>{formatBytes(candidate.contentLength)}</span>}
               </div>
-              <p className="url" title={candidate.url}>
-                {candidate.kind === 'blob' ? t('pageGeneratedBlob') : displayUrl(candidate.url)}
-              </p>
+              <h2 className="candidate-title">{candidate.title || (candidate.kind === 'blob' ? t('pageGeneratedBlob') : displayUrl(candidate.sourcePageUrl ?? candidate.url))}</h2>
+              {qualities.length > 0 && <label className="quality-picker">
+                <span>{t('resolution')}</span>
+                <select value={selectedQuality} onChange={(event) => setSelectedQualities((current) => ({ ...current, [candidate.id]: event.target.value }))}>
+                  {qualities.map((quality, index) => <option key={quality.id} value={quality.id}>
+                    {videoQualityLabel(quality)}{index === 0 ? ` · ${t('highestAvailable')}` : ''}
+                  </option>)}
+                </select>
+              </label>}
               <button disabled={disabled} onClick={() => void act(candidate)}>
-                {candidate.kind === 'progressive'
-                  ? t('download')
-                  : disabled ? t('notExportableYet') : t('inspectDownload')}
+                {disabled ? t('notExportableYet') : t('download')}
               </button>
+              </div>
             </article>
           );
         })}
+      </section>
+
+      <section className="batch-entry">
+        <div><strong>{supportsBatchDiscovery ? t('seriesDiscoveryAvailable') : t('downloadQueue')}</strong></div>
+        <button className="quiet" onClick={() => void openManager()}>
+          {supportsBatchDiscovery ? t('scanBatchDownload') : t('openManager')}
+        </button>
       </section>
 
       <label className="output-setting">
