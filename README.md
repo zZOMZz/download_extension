@@ -28,9 +28,11 @@ pnpm build
 - Download HLS VOD playlists, including standard `AES-128` identity encryption.
 - Resolve external HLS audio renditions and merge separate audio/video playlists into one MP4.
 - Download static, non-DRM DASH MP4 tracks described by `SegmentTemplate`, `SegmentList`, or single-file `SegmentBase`/SIDX, then losslessly merge separate video and audio into one indexed MP4.
-- Detect Bilibili's page-embedded `window.__playinfo__` DASH metadata through an isolated site adapter.
+- Detect Bilibili video and bangumi playback from legacy `window.__playinfo__`, current server-rendered `playurlSSRData`, and active player responses.
 - Detect MP4 DASH tracks on YouTube watch pages by combining player metadata with the signed Google Video URLs already requested by the active player.
 - Discover Bilibili multi-P videos and UGC collections, flatten every page into a queued DASH task, and resolve signed tracks on demand.
+- Discover bangumi episodes from `ep`/`ss` pages, excluding trailers from the main episode list, and resolve each episode's current DASH or single-file MP4 immediately before download.
+- Label preview downloads explicitly and reject preview-only or DRM-protected responses in full-episode batch tasks.
 - Choose a persistent HLS output format; MP4 is the default.
 - Download MPEG-TS HLS into a resumable `.part.ts`, then losslessly remux H.264/AAC streams to a finalized, indexed MP4.
 - Discover all episodes from supported series pages and add them to a persistent batch queue.
@@ -74,6 +76,21 @@ to the active downloader or manager tab and Bilibili API/CDN domains; closing
 that tab removes the rule. Exact-range responses are required for single-file DASH so a server
 that ignores `Range` cannot make the extension buffer the entire source file in
 memory.
+
+Bilibili bangumi pages use a different playback envelope (`result.video_info`)
+from ordinary videos. The Bilibili main-world bridge observes only playback
+responses already requested by the player, publishing normalized media metadata
+through an inert hidden element. It does not read cookies or account storage.
+Episode identity checks discard responses from a previous page after navigation.
+Different encodings with the same Bilibili quality ID retain distinct track IDs.
+Single-file MP4 downloads use the source page's Referer through the same scoped
+request adapter. Multi-file legacy `durl` responses are not supported.
+
+Bangumi batch resolution uses the browser's current session to fetch fresh
+episode pages. If the session only has preview access, the task stops with an
+explicit message instead of saving the preview as a full episode. Progressive
+MP4 queue tasks stream to disk and validate the output; retries start over and
+do not resume a partial file.
 
 The YouTube detection adapter is limited to individual watch pages. It reads
 the current non-DRM MP4 metadata and combines it with signed `googlevideo.com`

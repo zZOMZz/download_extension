@@ -19,7 +19,7 @@ const reportAdapterObservations = createAdapterObservationReporter((candidate) =
   browser.runtime.sendMessage({ type: 'candidate:observe', candidate }));
 const adapterObservedResources = new Set<string>();
 const MAX_ADAPTER_RESOURCE_URLS = 256;
-const ADAPTER_STATE_SELECTOR = 'script, [data-open-media-downloader-youtube-player]';
+const ADAPTER_STATE_SELECTOR = 'script, [data-open-media-downloader-youtube-player], [data-open-media-downloader-bilibili-player]';
 let adapterResourcePage = location.href;
 
 function refreshAdapterResourcePage(): void {

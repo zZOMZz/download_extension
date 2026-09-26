@@ -7,10 +7,19 @@ export function createBilibiliSessionRule(
   extensionId: string,
   ruleId: number,
 ): SiteRequestRule {
-  const pageUrl = new URL(candidate.url);
+  const pageUrl = new URL(candidate.sourcePageUrl ?? candidate.url);
   if (candidate.siteAdapterId !== 'bilibili' ||
+      !['http:', 'https:'].includes(pageUrl.protocol) ||
       (pageUrl.hostname !== 'www.bilibili.com' && pageUrl.hostname !== 'm.bilibili.com')) {
     throw new Error('The Bilibili request adapter received an unrelated media candidate.');
+  }
+  if (candidate.kind === 'progressive') {
+    const mediaUrl = new URL(candidate.url);
+    if (!['http:', 'https:'].includes(mediaUrl.protocol) ||
+        !['bilivideo.com', 'bilivideo.cn'].some((domain) =>
+          mediaUrl.hostname === domain || mediaUrl.hostname.endsWith(`.${domain}`))) {
+      throw new Error('The Bilibili request adapter received an unrelated media URL.');
+    }
   }
   return {
     id: ruleId,

@@ -210,7 +210,7 @@ describe('site discovery adapters', () => {
   it('isolates Bilibili batch discovery from lookalike hosts and non-video pages', () => {
     expect(supportsSiteDiscovery('https://www.bilibili.com/video/BV1test')).toBe(true);
     expect(supportsSiteDiscovery('https://evil-bilibili.com/video/BV1test')).toBe(false);
-    expect(supportsSiteDiscovery('https://www.bilibili.com/bangumi/play/ep1')).toBe(false);
+    expect(supportsSiteDiscovery('https://www.bilibili.com/bangumi/play/ep1')).toBe(true);
     expect(bilibiliDiscoveryAdapter.matches(new URL('https://m.bilibili.com/video/BV1test'))).toBe(false);
   });
 

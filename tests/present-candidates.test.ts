@@ -8,6 +8,11 @@ function candidate(id: string, overrides: Partial<MediaCandidate> = {}): MediaCa
 }
 
 describe('media candidate presentation', () => {
+  it('replaces an unexplained blob with a site DRM status', () => {
+    const generic = candidate('blob');
+    const protectedMedia = candidate('protected', { siteAdapterId: 'bilibili', hasContentProtection: true });
+    expect(visibleMediaCandidates([generic, protectedMedia])).toEqual([protectedMedia]);
+  });
   it('hides a generic blob when the same frame has a downloadable site candidate', () => {
     const blob = candidate('blob');
     const adapted = candidate('adapted', { kind: 'sabr', siteAdapterId: 'youtube' });

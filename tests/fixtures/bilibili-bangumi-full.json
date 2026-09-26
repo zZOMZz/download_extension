@@ -1,0 +1,145 @@
+{
+  "data": {
+    "result": {
+      "arc": {
+        "cid": 42162064891
+      },
+      "play_video_type": "whole",
+      "video_info": {
+        "format": "flv480",
+        "timelength": 1710122,
+        "is_drm": null,
+        "is_preview": false,
+        "support_formats": [
+          {
+            "quality": 80,
+            "report": {
+              "ep_id": "3854817"
+            }
+          }
+        ],
+        "dash": {
+          "duration": 1711,
+          "video": [
+            {
+              "id": 125,
+              "bandwidth": 15757447,
+              "mime_type": "video/mp4",
+              "codecs": "hvc1.2.4.L153.90",
+              "width": 3840,
+              "height": 2160,
+              "frame_rate": "25.000",
+              "segment_base": {
+                "initialization": "0-1131",
+                "index_range": "1132-5311"
+              },
+              "codecid": 12,
+              "base_url": "https://media.example/video-0.m4s",
+              "backup_url": [
+                "https://backup.example/video-0.m4s"
+              ]
+            },
+            {
+              "id": 80,
+              "bandwidth": 3564012,
+              "mime_type": "video/mp4",
+              "codecs": "avc1.640032",
+              "width": 1920,
+              "height": 1080,
+              "frame_rate": "25.000",
+              "segment_base": {
+                "initialization": "0-932",
+                "index_range": "933-5112"
+              },
+              "codecid": 7,
+              "base_url": "https://media.example/video-10.m4s",
+              "backup_url": [
+                "https://backup.example/video-10.m4s"
+              ]
+            },
+            {
+              "id": 80,
+              "bandwidth": 1983593,
+              "mime_type": "video/mp4",
+              "codecs": "hvc1.1.6.L150.90",
+              "width": 1920,
+              "height": 1080,
+              "frame_rate": "25.000",
+              "segment_base": {
+                "initialization": "0-1099",
+                "index_range": "1100-5279"
+              },
+              "codecid": 12,
+              "base_url": "https://media.example/video-11.m4s",
+              "backup_url": [
+                "https://backup.example/video-11.m4s"
+              ]
+            },
+            {
+              "id": 80,
+              "bandwidth": 1779044,
+              "mime_type": "video/mp4",
+              "codecs": "av01.0.08M.08.0.110.01.01.01.0",
+              "width": 1920,
+              "height": 1080,
+              "frame_rate": "25.000",
+              "segment_base": {
+                "initialization": "0-993",
+                "index_range": "994-5173"
+              },
+              "codecid": 13,
+              "base_url": "https://media.example/video-12.m4s",
+              "backup_url": [
+                "https://backup.example/video-12.m4s"
+              ]
+            }
+          ],
+          "audio": [
+            {
+              "id": 30216,
+              "bandwidth": 65676,
+              "mime_type": "audio/mp4",
+              "codecs": "mp4a.40.2",
+              "segment_base": {
+                "initialization": "0-836",
+                "index_range": "837-4980"
+              },
+              "base_url": "https://media.example/audio-0.m4s",
+              "backup_url": [
+                "https://backup.example/audio-0.m4s"
+              ]
+            },
+            {
+              "id": 30232,
+              "bandwidth": 112848,
+              "mime_type": "audio/mp4",
+              "codecs": "mp4a.40.2",
+              "segment_base": {
+                "initialization": "0-836",
+                "index_range": "837-4980"
+              },
+              "base_url": "https://media.example/audio-1.m4s",
+              "backup_url": [
+                "https://backup.example/audio-1.m4s"
+              ]
+            },
+            {
+              "id": 30280,
+              "bandwidth": 215057,
+              "mime_type": "audio/mp4",
+              "codecs": "mp4a.40.2",
+              "segment_base": {
+                "initialization": "0-836",
+                "index_range": "837-4980"
+              },
+              "base_url": "https://media.example/audio-2.m4s",
+              "backup_url": [
+                "https://backup.example/audio-2.m4s"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

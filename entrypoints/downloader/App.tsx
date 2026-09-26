@@ -169,6 +169,7 @@ export function App() {
           await configureCandidateRequestAdapter(found.tabId, found.id);
         }
         setCandidate(found);
+        if (found.hasContentProtection) throw new Error(t('protectedMediaUnsupported'));
         if (found.kind === 'hls') setHls(await inspectHlsUrl(found.url, loadText, controller.signal));
         else if (found.kind === 'dash') {
           const source = found.dash ?? parseDashMediaSource(await loadText(found.url, controller.signal), found.url);
@@ -264,7 +265,7 @@ export function App() {
   };
 
   const startProgressiveDownload = async () => {
-    if (!candidate || candidate.kind !== 'progressive') return;
+    if (!candidate || candidate.kind !== 'progressive' || candidate.hasContentProtection) return;
     setError(null);
     setProgress(null);
     const controller = new AbortController();
@@ -273,7 +274,7 @@ export function App() {
     let destination: RandomAccessBinaryWriter | undefined;
     try {
       destination = await openOutputWriter(
-        `${safeFilename(candidate.title ?? 'video')}.mp4`,
+        `${safeFilename(candidate.title ?? 'video')}${candidate.isPreview ? '-preview' : ''}.mp4`,
         'video/mp4',
         'mp4',
         { allowMemoryFallback: false },
@@ -306,7 +307,7 @@ export function App() {
     let destination: RandomAccessBinaryWriter | undefined;
     try {
       const height = (video ?? preferredDashTrack(dash, 'video'))?.height;
-      const filename = `${safeFilename(candidate.title ?? 'video')}${height ? `-${height}p` : ''}.mp4`;
+      const filename = `${safeFilename(candidate.title ?? 'video')}${height ? `-${height}p` : ''}${candidate.isPreview ? '-preview' : ''}.mp4`;
       // Open the picker while the click still grants transient user activation.
       destination = await openOutputWriter(filename, 'video/mp4', 'mp4');
       const plan = await prepareDashDownload(dash, {
@@ -431,6 +432,7 @@ export function App() {
 
         {loading && <div className="status">{t('readingManifest')}</div>}
         {error && <div className="notice error">{error}</div>}
+        {candidate?.isPreview && <div className="notice info">{t('previewOnly')}</div>}
 
         {!loading && candidate?.kind === 'progressive' && (
           <>
@@ -442,7 +444,7 @@ export function App() {
             <div className="actions">
               <button
                 className="primary"
-                disabled={downloading}
+                disabled={downloading || candidate.hasContentProtection}
                 onClick={() => void startProgressiveDownload()}
               >
                 {downloading ? t('downloadingEllipsis') : t('chooseFileDownload')}

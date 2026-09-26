@@ -50,6 +50,19 @@ describe('Bilibili request adapter', () => {
     }), 42, 'extension-id', 10_000_042)).toThrow(/unrelated/i);
   });
 
+  it('uses the episode page as Referer for a progressive CDN URL', () => {
+    const rule = createBilibiliSessionRule(candidate({
+      kind: 'progressive',
+      url: 'https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/clip.mp4',
+      sourcePageUrl: 'https://www.bilibili.com/bangumi/play/ep3854817',
+    }), 42, 'extension-id', 10_000_042);
+    expect(rule.action.requestHeaders[0]?.value).toBe('https://www.bilibili.com/bangumi/play/ep3854817');
+    expect(() => createBilibiliSessionRule(candidate({
+      kind: 'progressive', url: 'https://bilivideo.com.attacker.example/clip.mp4',
+      sourcePageUrl: 'https://www.bilibili.com/bangumi/play/ep3854817',
+    }), 42, 'extension-id', 10_000_042)).toThrow(/unrelated media URL/);
+  });
+
   it('uses one manager-scoped rule for API and CDN requests from batch tasks', () => {
     expect(createBilibiliManagerSessionRule(42, 'extension-id', 10_000_042)).toEqual({
       id: 10_000_042,

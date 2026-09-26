@@ -77,41 +77,58 @@ export async function downloadProgressiveMedia(
       throw new Error('The media URL must use HTTP or HTTPS.');
     }
     publish(true);
-    const response = await waitForNetwork(fetch(url, {
-      credentials: 'include',
-      signal: controller.signal,
-    }), options.networkPolicy?.firstByteTimeoutMs ?? 15_000);
-    if (response.status !== 200) {
-      await response.body?.cancel();
-      if (!response.ok) throw new HttpStatusError(response.status, undefined);
-      throw new Error('The server returned an incomplete media response.');
-    }
-    if (!response.body) throw new Error('The media response does not support streaming.');
-    const headerLength = response.headers.get('Content-Length');
-    const totalBytes = headerLength === null ? options.contentLength : Number(headerLength);
-    if (totalBytes !== undefined && Number.isSafeInteger(totalBytes) && totalBytes >= 0) {
-      progress.currentSegmentBytesTotal = totalBytes;
-    }
-    reader = response.body.getReader();
-    while (true) {
+    const request = async (): Promise<{ completed: true } | { completed: false; outputFailure: unknown }> => {
+      // Host cooldown/slot waiting must finish before the first-byte timer or fetch starts.
       controller.signal.throwIfAborted();
-      const chunk = await waitForNetwork(reader.read(), options.networkPolicy?.idleTimeoutMs ?? 20_000);
-      if (chunk.done) break;
-      // Await each write before reading more so the entire file is never buffered.
-      await writer.write(chunk.value);
-      progress.bytesWritten += chunk.value.byteLength;
-      progress.networkBytesReceived = progress.bytesWritten;
-      progress.currentSegmentBytesReceived = progress.bytesWritten;
-      progress.phase = 'downloading';
-      publish();
-    }
+      const response = await waitForNetwork(fetch(url, {
+        credentials: 'include',
+        signal: controller.signal,
+      }), options.networkPolicy?.firstByteTimeoutMs ?? 15_000);
+      if (response.status !== 200) {
+        await response.body?.cancel();
+        if (!response.ok) throw new HttpStatusError(response.status, undefined);
+        throw new Error('The server returned an incomplete media response.');
+      }
+      if (!response.body) throw new Error('The media response does not support streaming.');
+      const headerLength = response.headers.get('Content-Length');
+      const totalBytes = headerLength === null ? options.contentLength : Number(headerLength);
+      if (totalBytes !== undefined && Number.isSafeInteger(totalBytes) && totalBytes >= 0) {
+        progress.currentSegmentBytesTotal = totalBytes;
+      }
+      reader = response.body.getReader();
+      while (true) {
+        controller.signal.throwIfAborted();
+        const chunk = await waitForNetwork(reader.read(), options.networkPolicy?.idleTimeoutMs ?? 20_000);
+        if (chunk.done) break;
+        // Await each write before reading more so the entire file is never buffered.
+        try {
+          await writer.write(chunk.value);
+        } catch (outputFailure) {
+          // Stop the transfer before releasing its slot, but do not blame the CDN for a disk failure.
+          controller.abort(outputFailure);
+          await reader.cancel(outputFailure).catch(() => {});
+          return { completed: false, outputFailure };
+        }
+        progress.bytesWritten += chunk.value.byteLength;
+        progress.networkBytesReceived = progress.bytesWritten;
+        progress.currentSegmentBytesReceived = progress.bytesWritten;
+        progress.phase = 'downloading';
+        publish();
+      }
+      controller.signal.throwIfAborted();
+      if (progress.bytesWritten === 0 || (
+        progress.currentSegmentBytesTotal !== undefined &&
+        progress.bytesWritten !== progress.currentSegmentBytesTotal
+      )) {
+        throw new Error('The media response ended before the complete file was received.');
+      }
+      return { completed: true };
+    };
+    const coordinator = options.networkPolicy?.requestCoordinator;
+    const result = await (coordinator ? coordinator.run(url, request, controller.signal) : request());
+    if (!result.completed) throw result.outputFailure;
     controller.signal.throwIfAborted();
-    if (progress.bytesWritten === 0 || (
-      progress.currentSegmentBytesTotal !== undefined &&
-      progress.bytesWritten !== progress.currentSegmentBytesTotal
-    )) {
-      throw new Error('The media response ended before the complete file was received.');
-    }
+    // Final file commit is local work and must not affect host health or occupy a network slot.
     progress.phase = 'finalizing';
     publish(true);
     await writer.close();

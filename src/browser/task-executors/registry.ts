@@ -1,11 +1,13 @@
 import type { ResolvedDiscoveredMedia } from '../../core/discovery/types';
 import { dashTaskExecutor } from './dash';
 import { hlsTaskExecutor } from './hls';
+import { progressiveTaskExecutor } from './progressive';
 import type { ProtocolTaskExecutor } from './types';
 
 export const PROTOCOL_TASK_EXECUTORS: readonly ProtocolTaskExecutor[] = Object.freeze([
   hlsTaskExecutor,
   dashTaskExecutor,
+  progressiveTaskExecutor,
 ]);
 
 export function findTaskExecutor(

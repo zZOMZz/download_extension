@@ -94,6 +94,8 @@ export const mediaCandidateSchema = z.object({
   detectedAt: z.number().int().nonnegative(),
   siteAdapterId: z.string().min(1).optional(),
   sourcePageUrl: z.string().url().optional(),
+  isPreview: z.boolean().optional(),
+  hasContentProtection: z.boolean().optional(),
   dash: dashMediaSourceSchema.optional(),
   youtubeSabr: youtubeSabrSourceSchema.optional(),
 });
@@ -202,6 +204,13 @@ export type RuntimeRequest = z.infer<typeof runtimeRequestSchema>;
 export function candidateIdentity(
   candidate: Pick<MediaCandidate, 'kind' | 'url' | 'siteAdapterId' | 'sourcePageUrl'>,
 ): string {
+  if (candidate.siteAdapterId === 'bilibili' && candidate.sourcePageUrl) {
+    try {
+      const page = new URL(candidate.sourcePageUrl);
+      const part = page.searchParams.get('p') || '1';
+      return `bilibili\u0000${page.origin}${page.pathname.replace(/\/$/, '')}\u0000${part}`;
+    } catch { /* Use resource identity for invalid legacy candidates. */ }
+  }
   if (candidate.siteAdapterId === 'youtube') {
     const pageUrl = candidate.sourcePageUrl ?? (candidate.kind === 'dash' || candidate.kind === 'sabr' ? candidate.url : undefined);
     if (pageUrl) return `youtube\u0000${pageUrl}`;

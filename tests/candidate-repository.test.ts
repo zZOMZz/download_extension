@@ -42,6 +42,30 @@ beforeEach(() => {
 });
 
 describe('candidate repository adapter updates', () => {
+  it('replaces Bilibili previews, full tracks and DRM states without retaining old media', async () => {
+    const sourcePageUrl = 'https://www.bilibili.com/bangumi/play/ep3854817';
+    await upsertCandidate(1, 0, {
+      kind: 'progressive', source: 'dom', siteAdapterId: 'bilibili', sourcePageUrl,
+      url: 'https://cdn.bilivideo.com/preview.mp4', isPreview: true,
+    });
+    const [initial] = await listCandidates(1);
+    await upsertCandidate(1, 0, {
+      kind: 'dash', source: 'dom', siteAdapterId: 'bilibili',
+      sourcePageUrl: `${sourcePageUrl}?spm_id_from=test`, url: sourcePageUrl,
+      isPreview: false, dash: { type: 'static', hasContentProtection: false, tracks: [] },
+    });
+    expect(await listCandidates(1)).toMatchObject([{ id: initial!.id, kind: 'dash', isPreview: false }]);
+    await upsertCandidate(1, 0, {
+      kind: 'blob', source: 'dom', siteAdapterId: 'bilibili', sourcePageUrl,
+      url: sourcePageUrl, hasContentProtection: true,
+    });
+    const stored = await listCandidates(1);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ id: initial!.id, kind: 'blob', hasContentProtection: true });
+    expect(stored[0]).not.toHaveProperty('dash');
+    expect(stored[0]).not.toHaveProperty('isPreview');
+  });
+
   it('refreshes signed YouTube URLs while preserving one candidate and its stable ID', async () => {
     await upsertCandidate(1, 0, youtubeProgressive());
     const [first] = await listCandidates(1);

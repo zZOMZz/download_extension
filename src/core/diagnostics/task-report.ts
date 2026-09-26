@@ -19,7 +19,7 @@ function urlWithoutSecrets(rawUrl: string): string {
   }
 }
 
-function taskMediaKind(task: DownloadTask): 'hls' | 'dash' | undefined {
+function taskMediaKind(task: DownloadTask): 'hls' | 'dash' | 'progressive' | undefined {
   if (task.source.mediaKind) return task.source.mediaKind;
   if (task.checkpoint?.version === 1) return 'hls';
   if (task.checkpoint?.version === 2) return 'dash';

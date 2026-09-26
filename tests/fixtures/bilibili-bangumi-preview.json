@@ -1,0 +1,33 @@
+{
+  "status": 200,
+  "data": {
+    "result": {
+      "arc": {
+        "cid": 42162064891
+      },
+      "play_video_type": "preview",
+      "video_info": {
+        "format": "mp4",
+        "timelength": 1710122,
+        "is_drm": null,
+        "is_preview": true,
+        "durl": [
+          {
+            "order": 1,
+            "length": 180160,
+            "size": 24166415,
+            "url": "https://media.example/preview.mp4",
+            "backup_url": [
+              "https://backup.example/preview.mp4"
+            ]
+          }
+        ]
+      },
+      "supplement": {
+        "ogv_episode_info": {
+          "episode_id": 3854817
+        }
+      }
+    }
+  }
+}

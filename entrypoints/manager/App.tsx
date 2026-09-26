@@ -156,7 +156,7 @@ function TaskProgress({ progress, t }: {
   );
 }
 
-function taskMediaKind(task: DownloadTask): 'hls' | 'dash' | undefined {
+function taskMediaKind(task: DownloadTask): 'hls' | 'dash' | 'progressive' | undefined {
   if (task.source.mediaKind) return task.source.mediaKind;
   if (task.checkpoint?.version === 1) return 'hls';
   if (task.checkpoint?.version === 2) return 'dash';
@@ -484,8 +484,8 @@ export function App() {
     const items = discovered.filter(({ id }) => selectedIds.has(id));
     if (items.length === 0) return;
     try {
-      const dashItems = items.filter(({ mediaKind }) => mediaKind === 'dash');
-      const otherItems = items.filter(({ mediaKind }) => mediaKind !== 'dash');
+      const dashItems = items.filter(({ mediaKind }) => mediaKind === 'dash' || mediaKind === 'progressive');
+      const otherItems = items.filter(({ mediaKind }) => mediaKind !== 'dash' && mediaKind !== 'progressive');
       let savedTasks = tasks;
       if (otherItems.length > 0) {
         savedTasks = await addPersistentDownloadTasks(otherItems, outputFormat);
@@ -560,9 +560,16 @@ export function App() {
       });
     try {
       const media = await resolveDiscoveredMedia(task.source, { fetchText: loadText, signal });
+      if (media.kind === 'hls' || media.kind === 'dash' || media.kind === 'progressive') {
+        task = await persistTask({
+          ...task,
+          source: { ...task.source, mediaKind: media.kind },
+          ...(media.kind === 'progressive' ? { outputFormat: 'mp4' as const } : {}),
+        });
+      }
       await recordTaskEvent(task.id, 'source-resolved', 'info', {
         ...diagnosticResource(media.url),
-        ...(media.kind === 'hls' || media.kind === 'dash' ? { protocol: media.kind } : {}),
+        ...(media.kind === 'hls' || media.kind === 'dash' || media.kind === 'progressive' ? { protocol: media.kind } : {}),
       });
       if (!directory) throw new Error(t('chooseDirectoryBeforeQueue'));
       const executor = findTaskExecutor(media.kind);
@@ -869,7 +876,7 @@ export function App() {
   const queuedCount = tasks.filter(({ status }) => status === 'queued' || status === 'waiting').length;
   const completedCount = tasks.filter(({ status }) => status === 'completed').length;
   const activeCount = tasks.filter(({ status }) => status === 'resolving' || status === 'downloading').length;
-  const discoveredDashOnly = discovered.length > 0 && discovered.every(({ mediaKind }) => mediaKind === 'dash');
+  const discoveredDashOnly = discovered.length > 0 && discovered.every(({ mediaKind }) => mediaKind === 'dash' || mediaKind === 'progressive');
 
   return (
     <>
@@ -1133,11 +1140,11 @@ export function App() {
                   <div className="task-badges">
                     {mediaKind && (
                       <span className={`protocol protocol-${mediaKind}`}>
-                        {t(mediaKind === 'dash' ? 'protocolDash' : 'protocolHls')}
+                        {mediaKind === 'progressive' ? 'MP4' : t(mediaKind === 'dash' ? 'protocolDash' : 'protocolHls')}
                       </span>
                     )}
                     <span className="output-badge">
-                      {mediaKind === 'dash' || task.outputFormat === 'mp4'
+                      {mediaKind === 'dash' || mediaKind === 'progressive' || task.outputFormat === 'mp4'
                         ? t('outputMp4')
                         : t('outputOriginal')}
                     </span>

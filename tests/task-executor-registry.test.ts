@@ -3,10 +3,11 @@ import { findTaskExecutor } from '../src/browser/task-executors/registry';
 import type { ProtocolTaskExecutor } from '../src/browser/task-executors/types';
 
 describe('task executor registry', () => {
-  it('selects the executor registered for each queued streaming protocol', () => {
+  it('selects the executor registered for each queued media protocol', () => {
     expect(findTaskExecutor('hls')?.kind).toBe('hls');
     expect(findTaskExecutor('dash')?.kind).toBe('dash');
-    expect(findTaskExecutor('progressive')).toBeUndefined();
+    expect(findTaskExecutor('progressive')?.kind).toBe('progressive');
+    expect(findTaskExecutor('sabr')).toBeUndefined();
   });
 
   it('rejects overlapping protocol executors', () => {

@@ -5,7 +5,7 @@ export const discoveredMediaItemSchema = z.object({
   adapterId: z.string().min(1),
   pageUrl: z.string().url(),
   title: z.string().min(1),
-  mediaKind: z.enum(['hls', 'dash']).optional(),
+  mediaKind: z.enum(['hls', 'dash', 'progressive']).optional(),
   seriesTitle: z.string().min(1).optional(),
   sequence: z.number().int().nonnegative().optional(),
 });

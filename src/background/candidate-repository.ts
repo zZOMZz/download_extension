@@ -56,7 +56,8 @@ export function upsertCandidate(
       const existing = candidates[existingIndex];
       if (!existing) return;
       candidates[existingIndex] = {
-        ...existing,
+        // A new Bilibili playback state replaces preview/DRM/track fields as a unit.
+        ...(observation.siteAdapterId === 'bilibili' ? {} : existing),
         ...observation,
         id: existing.id,
         tabId,

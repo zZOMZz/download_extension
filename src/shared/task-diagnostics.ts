@@ -76,7 +76,7 @@ export const taskDiagnosticEventSchema = z.object({
   nextRetryAt: z.number().int().nonnegative().optional(),
   filename: z.string().optional(),
   directoryName: z.string().optional(),
-  protocol: z.enum(['hls', 'dash']).optional(),
+  protocol: z.enum(['hls', 'dash', 'progressive']).optional(),
   videoTrackId: z.string().optional(),
   audioTrackId: z.string().optional(),
   videoCodec: z.string().optional(),

@@ -155,7 +155,8 @@ export function App() {
 
       <section className="candidate-list">
         {visibleCandidates.map((candidate) => {
-          const disabled = candidate.kind === 'blob';
+          const protectedMedia = candidate.hasContentProtection || candidate.dash?.hasContentProtection;
+          const disabled = candidate.kind === 'blob' || protectedMedia;
           const qualities = candidateVideoQualities(candidate);
           const selectedQuality = selectedVideoQuality(qualities, selectedQualities[candidate.id]);
           const displayedQuality = qualities.find(({ id }) => id === selectedQuality);
@@ -171,6 +172,8 @@ export function App() {
                 {formatBytes(candidate.contentLength) && <span>{formatBytes(candidate.contentLength)}</span>}
               </div>
               <h2 className="candidate-title">{candidate.title || (candidate.kind === 'blob' ? t('pageGeneratedBlob') : displayUrl(candidate.sourcePageUrl ?? candidate.url))}</h2>
+              {candidate.isPreview && <p className="notice info">{t('previewOnly')}</p>}
+              {protectedMedia && <p className="notice error">{t('protectedMediaUnsupported')}</p>}
               {qualities.length > 0 && <label className="quality-picker">
                 <span>{t('resolution')}</span>
                 <select value={selectedQuality} onChange={(event) => setSelectedQualities((current) => ({ ...current, [candidate.id]: event.target.value }))}>
@@ -180,7 +183,7 @@ export function App() {
                 </select>
               </label>}
               <button disabled={disabled} onClick={() => void act(candidate)}>
-                {disabled ? t('notExportableYet') : t('download')}
+                {protectedMedia ? t('protectedMediaLabel') : disabled ? t('notExportableYet') : candidate.isPreview ? t('downloadPreview') : t('download')}
               </button>
               </div>
             </article>
