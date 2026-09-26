@@ -2,7 +2,7 @@ import { fetchTextResource, isRecoverableNetworkError, type HlsNetworkPolicy, ty
 import { HostHealthController, type HostHealthSnapshot } from '../core/network/host-health';
 import type { Transport } from '../core/network/transport';
 import type { DiscoveryResolveContext, ResolvedDiscoveredMedia } from '../core/discovery/source';
-import { validateMediaOutput } from '../core/media/output-validator';
+import { OutputValidationError, validateMediaOutput } from '../core/media/output-validator';
 import { checkpointPartialFilenames, checkpointMatchesDirectory } from '../core/task-checkpoint';
 import { classifyTaskError } from '../core/task-error';
 import { runTaskPool } from '../core/task-pool';
@@ -295,6 +295,13 @@ export class DownloadRuntime {
       if (!durable) throw cause;
       if (durable.status === 'completed') { await this.#cleanup(durable); return; }
       task = durable;
+      if (cause instanceof OutputValidationError && task.outputCommit) {
+        // The intent points to a proven invalid/missing final output. A retry must execute again
+        // using the retained checkpoint, rather than revalidate the same bad artifact forever.
+        // I/O/storage failures keep the intent, because the finished output may still be valid.
+        task = { ...task };
+        delete task.outputCommit;
+      }
       const cancelled = signal.aborted || (cause instanceof Error && cause.name === 'AbortError');
       const failure = classifyTaskError(cancelled ? new DOMException('Task cancelled.', 'AbortError') : cause);
       if (cause instanceof RuntimeError) { failure.code = cause.code; failure.params = cause.params; }

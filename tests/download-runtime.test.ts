@@ -356,18 +356,46 @@ describe('download runtime output commit boundaries', () => {
     expect(h.files.has('one.part.ts')).toBe(false);
   });
 
-  it('retains the commit and fragments when output validation fails', async () => {
+  it.each(['invalid', 'missing'] as const)('reexecutes with retained fragments after a proven %s final output fails validation', async (failure) => {
     const h = harness();
     const execute = h.executor.execute.getMockImplementation()!;
+    let executions = 0;
     h.executor.execute.mockImplementation(async (context) => {
       const result = await execute(context);
-      h.files.set('one.ts', Uint8Array.of(1));
+      await context.persistTask({ ...context.task, status: 'downloading', checkpoint: checkpoint() });
+      if (++executions === 1) {
+        if (failure === 'invalid') h.files.set('one.ts', Uint8Array.of(1));
+        else h.files.delete('one.ts');
+      }
       return result;
     });
+    await h.runtime.start();
+    expect(h.store.tasks.get('one')).toMatchObject({ status: 'failed', checkpoint: checkpoint() });
+    expect(h.store.tasks.get('one')?.outputCommit).toBeUndefined();
+    expect(h.files.has('one.part.ts')).toBe(true);
+    expect(h.artifacts.remove).not.toHaveBeenCalled();
+    await h.runtime.retry('one');
+    await h.runtime.start();
+    expect(h.executor.execute).toHaveBeenCalledTimes(2);
+    expect(h.executor.execute.mock.calls[1]?.[0].task.checkpoint).toEqual(checkpoint());
+    expect(h.executor.execute.mock.calls[1]?.[0].task.outputCommit).toBeUndefined();
+    expect(h.store.tasks.get('one')?.status).toBe('completed');
+    expect(h.files.get('one.ts')).toEqual(validTs());
+    expect(h.files.has('one.part.ts')).toBe(false);
+  });
+
+  it('keeps the commit intent on a transient artifact I/O failure and retries validation without reexecution', async () => {
+    const h = harness();
+    vi.mocked(h.artifacts.stat).mockRejectedValueOnce(new Error('Temporary filesystem failure'));
     await h.runtime.start();
     expect(h.store.tasks.get('one')).toMatchObject({ status: 'failed', outputCommit: commit() });
     expect(h.files.has('one.part.ts')).toBe(true);
     expect(h.artifacts.remove).not.toHaveBeenCalled();
+    await h.runtime.retry('one');
+    await h.runtime.start();
+    expect(h.executor.execute).toHaveBeenCalledOnce();
+    expect(h.store.tasks.get('one')?.status).toBe('completed');
+    expect(h.files.has('one.part.ts')).toBe(false);
   });
 
   it('keeps recovery fragments when persisting completed fails before commit', async () => {
