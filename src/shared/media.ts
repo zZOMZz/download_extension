@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { browserSourceTargetSchema, browserSourceCommandSchema } from './browser-source';
 import { discoveredMediaItemSchema } from './discovery';
 import { downloadTaskSchema } from './download-task';
 import { outputFormatSchema } from './settings';
@@ -98,6 +99,7 @@ export const mediaCandidateSchema = z.object({
   hasContentProtection: z.boolean().optional(),
   dash: dashMediaSourceSchema.optional(),
   youtubeSabr: youtubeSabrSourceSchema.optional(),
+  browserSource: browserSourceTargetSchema.optional(),
 });
 
 export type MediaCandidate = z.infer<typeof mediaCandidateSchema>;
@@ -119,6 +121,7 @@ export const adapterResourceObservationSchema = z.object({
 export type AdapterResourceObservation = z.infer<typeof adapterResourceObservationSchema>;
 
 export const runtimeRequestSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('browser-source:relay'), sourceTabId: z.number().int().nonnegative(), command: browserSourceCommandSchema }),
   z.object({
     type: z.literal('youtube-sabr:observe'),
     url: z.string().url().max(16 * 1_024),
@@ -199,8 +202,9 @@ export const runtimeRequestSchema = z.discriminatedUnion('type', [
 export type RuntimeRequest = z.infer<typeof runtimeRequestSchema>;
 
 export function candidateIdentity(
-  candidate: Pick<MediaCandidate, 'kind' | 'url' | 'siteAdapterId' | 'sourcePageUrl'>,
+  candidate: Pick<MediaCandidate, 'kind' | 'url' | 'siteAdapterId' | 'sourcePageUrl' | 'browserSource'>,
 ): string {
+  if (candidate.browserSource) return `browser-source\u0000${candidate.browserSource.providerId}\u0000${candidate.browserSource.mediaId}`;
   if (candidate.siteAdapterId === 'bilibili' && candidate.sourcePageUrl) {
     try {
       const page = new URL(candidate.sourcePageUrl);

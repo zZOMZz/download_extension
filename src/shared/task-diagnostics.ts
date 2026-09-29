@@ -34,6 +34,7 @@ export const taskDiagnosticEventCodeSchema = z.enum([
   'source-resolved',
   'source-refresh-started',
   'source-refreshed',
+  'source-waiting',
   'manifest-loaded',
   'dash-tracks-selected',
   'audio-rendition-loaded',
@@ -60,6 +61,7 @@ export const taskDiagnosticEventSchema = z.object({
   level: z.enum(['info', 'warning', 'error']),
   code: taskDiagnosticEventCodeSchema,
   message: z.string().optional(),
+  failure: downloadFailureSchema.optional(),
   resourceKind: z.enum(['text', 'media-segment', 'encryption-key', 'initialization-segment']).optional(),
   resourceHost: z.string().optional(),
   resourcePath: z.string().optional(),
@@ -104,6 +106,9 @@ export function createTaskDiagnosticEvent(
   return taskDiagnosticEventSchema.parse({
     ...input,
     ...(input.message ? { message: sanitizeDiagnosticText(input.message) } : {}),
+    ...(input.failure ? { failure: { ...input.failure, message: sanitizeDiagnosticText(input.failure.message),
+      ...(input.failure.params ? { params: Object.fromEntries(Object.entries(input.failure.params)
+        .map(([key, value]) => [key, typeof value === 'string' ? sanitizeDiagnosticText(value) : value])) } : {}) } } : {}),
     id: input.id ?? crypto.randomUUID(),
     at: input.at ?? Date.now(),
   });

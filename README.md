@@ -42,9 +42,18 @@ under `test-results/e2e/`, with an HTML report in `playwright-report/e2e/`.
 Set `PLAYWRIGHT_BROWSERS_PATH` consistently for installation and execution if a
 separate browser cache is needed.
 
+Page-assisted journeys additionally require `ffmpeg` and `ffprobe` in `PATH`. They use generated encrypted
+media and a SHA-256-pinned Aliplayer HLS2 module from the official CDN, cached in
+the OS temporary directory. Set `ALIPLAYER_TEST_SDK` to a local copy with the same
+hash for offline runs. Website pages and media responses remain controlled fixtures;
+these tests do not use real site accounts.
+
 ## Current scope
 
 - Detect progressive video/audio, HLS playlists, DASH manifests, site-exposed DASH metadata, and blob media.
+- Discover video pages and collection links through site adapters.
+- Queue page-assisted downloads through the same manager, using a supported processing module in the active browser session.
+- Stream processed audio/video to resumable partials, validate source identity and timeline continuity, and wait explicitly when the source page is unavailable.
 - Download progressive HTTP(S) media using the browser download manager.
 - Parse HLS master and media playlists.
 - Download HLS VOD playlists, including standard `AES-128` identity encryption.
@@ -80,14 +89,23 @@ separate browser cache is needed.
 diagnostics, and final output validation. The manager sends commands and renders
 snapshots; opening another manager does not reset active tasks. Protocol-specific
 download and checkpoint behavior lives behind `src/runtime/task-executors/`.
-An executor must claim one media kind, while site-specific detection, discovery,
+An executor claims a media kind and execution mode, while site-specific detection, discovery,
 and request compatibility remain in their adapter layers. The registry rejects
 duplicate claims so adding a protocol cannot silently replace an implementation.
+
+Executor selection now includes an execution mode. Existing tasks default to HTTP;
+page-assisted HLS uses an optional host `MediaSourceProvider`. Media protocols and
+site/player integration remain separate. Node hosts do not automatically inherit
+browser sessions. See [browser media sources and local processing](docs/browser-media-sources.md)
+for usage, cloud/local responsibilities, recovery, and adapter boundaries. Koala with
+Aliplayer is the current integration example; this does not imply support for every
+site using that SDK. [Validation and examples](docs/browser-media-validation.md)
+separate controlled E2E coverage from real-account results.
 
 All network requests accept a host-provided `Transport`. `ArtifactStore`,
 `TaskStore`, `ExecutionLocks`, and `TransformBackend` separate task rules from
 browser files, storage, sessions, and workers. Existing checkpoint versions 1
-and 2 remain readable. A durable `outputCommit` record allows interrupted
+and 2 remain readable; page-assisted tasks use version 3. A durable `outputCommit` record allows interrupted
 completion to be retried; partial files are removed only after validation and
 persisting the completed task. Cleanup failures retain a retryable record.
 
@@ -113,8 +131,7 @@ bundle dependency graph and downloads a local HTTP fixture using the compiled
 library in a plain Node child process. This is a local package artifact; it is
 not published or deployed.
 
-See the [refactoring plan](docs/runtime-refactor-plan.md) and
-[runtime architecture and host contracts](docs/runtime-architecture.md) for
+See [runtime architecture and host contracts](docs/runtime-architecture.md) for
 ownership, recovery, capabilities, and integration examples. Browser capture and
 playback sessions remain extension capabilities; a Node or cloud host does not
 automatically inherit them.
@@ -213,7 +230,9 @@ endpoint immediately before download. Site JSON and request-header behavior
 remain in Bilibili-specific adapter modules.
 
 Batch tasks are stored in `browser.storage.local` and are independent of the
-source tab after they are added. The manager uses a bounded task pool and
+source tab as saved records. Page-assisted tasks still require a valid browser
+playback session while executing; they can reconnect to a freshly prepared page.
+The manager uses a bounded task pool and
 requires a directory handle so large outputs are streamed to disk instead of
 accumulated in memory. Each individual HLS task still downloads its segments in
 playlist order.

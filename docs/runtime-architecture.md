@@ -1,6 +1,6 @@
 # 下载 Runtime 与宿主边界
 
-本次把下载的任务所有权、协议执行与成品提交从 React 页面中抽出；扩展接入和最小 Node 宿主使用同一个 `DownloadRuntime`。这是一套可嵌入的 TypeScript runtime，并非已部署的云服务，也没有新建四套应用。
+下载的任务所有权、协议执行与成品提交由 `DownloadRuntime` 负责；扩展和最小 Node 宿主复用同一套 TypeScript runtime，React 页面负责发送命令和展示快照。
 
 ## 一次下载由谁负责
 
@@ -22,9 +22,14 @@
 
 - **浏览器采集器**仍在 content script、MAIN world 播放器 bridge 和 background 中。它观察页面 DOM、网络资源、播放器响应及受授权的短时播放上下文。
 - **Source resolver**把结构化来源解析成 HLS/DASH 地址、嵌入的轨道元数据或 Progressive 完整 MP4 地址。它可以使用 runtime 提供的 `fetchText`，不能假设存在浏览器标签页或登录态。
+- **MediaSourceProvider**是宿主可选能力，在页面辅助执行方式下提供会话、分片计划和处理后的媒体块；普通 HTTP 执行器不依赖它。
 - **DownloadRuntime**拥有任务状态转换、任务并发、请求健康状态、等待重试、取消、恢复、成品校验与清理顺序。打开 UI、读取快照都不会接管任务。
 - **协议与媒体内核**负责 manifest、分片、解密、轨道选择、续传指纹、MP4 封装与校验。
 - **宿主**实现网络、文件、持久化、执行锁和计算后端。扩展的文件授权、Web Worker、DNR 规则属于宿主；Node 的路径、文件描述符和本地执行锁也属于宿主。
+
+浏览器请求头规则在后台串行配置：从现有 session rules 中识别当前标签页的规则，
+分配未占用的有效整数 ID，再原子替换。规则 ID 不由标签页 ID 加偏移生成，避免
+大标签页 ID 溢出；后台重启后仍可从规则条件恢复归属，关闭标签页只清理其自身规则。
 
 代码入口：
 
@@ -34,6 +39,7 @@
 | `src/runtime/task-executors/` | 共用 HLS/DASH/Progressive 任务执行器 |
 | `src/runtime/artifact-store.ts` | 输出命名空间、范围读取、可恢复随机写入 |
 | `src/runtime/transform-backend.ts` | 宿主封装后端接口 |
+| `src/runtime/media-source.ts` | 可选媒体来源 provider 与临时会话契约 |
 | `src/runtime/media/` | 不依赖 DOM/Worker 的双轨 MP4 与 TS 封装编排 |
 | `src/core/network/transport.ts` | 注入的 fetch-compatible 网络实现 |
 | `src/browser/download-runtime.ts` | 扩展任务仓库、锁、来源解析与会话设置的组装 |
@@ -52,6 +58,7 @@ const runtime = new DownloadRuntime({
   transforms,     // createHlsWriter / createDashWriter
   locks,          // runExclusive(operation)
   transport,      // fetch(input, init)
+  mediaSourceProvider, // 可选；需要页面处理时由宿主提供
   resolve,        // resolve(source, { fetchText, signal })
   networkSettings,
   concurrency: 2,
@@ -74,6 +81,19 @@ unsubscribe();
 `start()` 处理取得执行权时队列中的 queued/waiting 任务。`enqueue`、重试、删除和清空完成记录也使用同一执行锁；运行期间其他客户端的写命令会返回 `runtimeBusy`，调用方需在本轮结束后重试。第二个管理页/CLI 不会把第一位执行者的任务标记为中断。UI 订阅失败不影响任务执行。
 
 当前通用持久队列提供 HLS/DASH/Progressive 执行器。SABR 仍走一次性单项入口并保留宿主播放会话边界；Node CLI 明确只接受直接 HLS/DASH manifest，不宣称支持任意站点页面或 YouTube 播放会话。
+
+### 页面辅助来源
+
+来源解析可附带 `browserSource` 描述；协议仍是 HLS，执行方式为 `browser-session`。
+宿主通过可选 `MediaSourceProvider` 提供临时会话、完整分片计划和有界数据读取。
+它与 `Transport` 分开，因为页面 SDK 同时涉及授权、媒体处理和会话生命周期。
+默认 HTTP 执行器及旧检查点保持兼容。
+
+runtime 新增 `waiting-source` 状态：来源页面不可用时释放任务池位置并保留
+检查点，等待显式重连；这类任务不进入网络退避循环。页面辅助下载的版本 3
+检查点在音视频文件关闭提交后保存，完成前校验计划完整性和输出时长。
+执行器按媒体协议和执行方式共同选择。具体使用、云端/本地分工及站点接入示例见
+[浏览器媒体来源](browser-media-sources.md)，验收方法见[验证与案例](browser-media-validation.md)。
 
 Bilibili 番剧解析沿用 main 的来源校验：同一 episode/cid、完整播放权限、无 DRM，且 `durl` 仅有一个可识别为 MP4 的资源时，才可作为 Progressive 完整文件执行。多文件 durl、FLV、预览内容不会被当成完整 MP4。Progressive 下载保留流式写入、最终媒体校验与任务恢复；401/403、暂时网络失败或超时进入队列重试，重新解析来源取得新 URL 后重新写完整文件，不携带 Range 或分片 checkpoint。文件写入失败不伪装成网络故障。
 

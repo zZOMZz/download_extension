@@ -9,6 +9,7 @@ export interface MediaDetectionAdapter {
   matches(pageUrl: URL): boolean;
   claimsResource?(resourceUrl: URL): boolean;
   ownsResource?(resourceUrl: URL, pageUrl: URL): boolean;
+  suppressesGenericMedia?(pageUrl: URL): boolean;
   detect(
     document: Document,
     pageUrl: URL,

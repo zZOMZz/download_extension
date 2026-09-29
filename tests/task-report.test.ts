@@ -2,8 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { buildTaskDiagnosticReport } from '../src/core/diagnostics/task-report';
 import { NETWORK_PRESETS } from '../src/shared/settings';
 import type { DownloadTask } from '../src/shared/download-task';
+import { createTaskDiagnosticEvent } from '../src/shared/task-diagnostics';
 
 describe('task diagnostic report', () => {
+  it('keeps an independent, sanitized failure snapshot in the event history', () => {
+    const failure = { category: 'source' as const, code: 'browserSourceUnavailable', recoverable: false,
+      occurredAt: 1, message: 'https://example.test/video?token=secret', params: { reason: 'sdk-uninitialized', url: 'https://example.test/video?token=secret' } };
+    const event = createTaskDiagnosticEvent({ taskId: 'sample', level: 'warning', code: 'source-waiting', failure });
+    failure.params.reason = 'changed-after-retry';
+    expect(event.failure?.params?.reason).toBe('sdk-uninitialized');
+    expect(JSON.stringify(event)).not.toContain('token=secret');
+  });
   it('contains useful task context without signed URL query parameters', () => {
     const task: DownloadTask = {
       id: 'task-1',

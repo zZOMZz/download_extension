@@ -1,4 +1,8 @@
 import { browser } from 'wxt/browser';
+import { isBackgroundRuntimeSender } from '~/src/background/runtime-access';
+import { requestPageSource } from '~/src/browser/page-source-bridge';
+import { browserSourceRpcSchema, BROWSER_SOURCE_STATE_SELECTOR } from '~/src/shared/browser-source';
+import { koalaVideoId } from '~/src/core/site-adapters/koala/identity';
 import { classifyMediaResource } from '~/src/core/detection/classify-media';
 import { createAdapterObservationReporter } from '~/src/core/detection/adapter-observations';
 import { readYouTubeSabrRequestMessage } from '~/src/core/site-adapters/youtube/sabr-request-observer';
@@ -6,6 +10,7 @@ import {
   detectAdapterMedia,
   detectionAdapterClaimsResource,
   detectionAdapterOwnsResource,
+  suppressesGenericMedia,
 } from '~/src/core/detection/adapters/registry';
 import { discoverMediaItems } from '~/src/core/discovery/registry';
 import { pageDiscoveryRequestSchema } from '~/src/shared/discovery';
@@ -19,7 +24,7 @@ const reportAdapterObservations = createAdapterObservationReporter((candidate) =
   browser.runtime.sendMessage({ type: 'candidate:observe', candidate }));
 const adapterObservedResources = new Set<string>();
 const MAX_ADAPTER_RESOURCE_URLS = 256;
-const ADAPTER_STATE_SELECTOR = 'script, [data-open-media-downloader-youtube-player], [data-open-media-downloader-bilibili-player]';
+const ADAPTER_STATE_SELECTOR = `script, [data-open-media-downloader-youtube-player], [data-open-media-downloader-bilibili-player], ${BROWSER_SOURCE_STATE_SELECTOR}`;
 let adapterResourcePage = location.href;
 
 function refreshAdapterResourcePage(): void {
@@ -49,6 +54,7 @@ function reportObservation(candidate: CandidateObservation): void {
 }
 
 function report(rawUrl: string, source: CandidateObservation['source'], mimeType?: string): void {
+  if (suppressesGenericMedia(location.href)) return;
   const url = rawUrl.trim();
   if (!url) return;
 
@@ -118,7 +124,15 @@ export default defineContentScript({
         void browser.runtime.sendMessage({ type: 'youtube-sabr:observe', ...observation }).catch(() => {});
       }
     });
-    browser.runtime.onMessage.addListener(async (message: unknown) => {
+    browser.runtime.onMessage.addListener(async (message: unknown, sender) => {
+      const sourceRequest = browserSourceRpcSchema.safeParse(message);
+      if (sourceRequest.success) {
+        if (!koalaVideoId(location.href) || !isBackgroundRuntimeSender(sender, browser.runtime.id, browser.runtime.getURL('/background.js'))) {
+          return { ok: false, error: 'browserSourceUnavailable' };
+        }
+        try { return await requestPageSource(sourceRequest.data.command, sourceRequest.data.owner); }
+        catch { return { ok: false, error: 'browserSourceUnavailable' }; }
+      }
       const resourceObservation = adapterResourceObservationSchema.safeParse(message);
       if (resourceObservation.success) {
         rememberAdapterResource(resourceObservation.data.url);

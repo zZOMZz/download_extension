@@ -16,6 +16,7 @@ import { RuntimeError } from './errors';
 import { findTaskExecutor } from './task-executors/registry';
 import type { ProtocolTaskExecutor, TaskExecutorResult } from './task-executors/types';
 import type { TransformBackend } from './transform-backend';
+import type { MediaSourceProvider } from './media-source';
 
 export interface TaskStore {
   add?(items: DiscoveredMediaItem[], outputFormat: OutputFormat): Promise<DownloadTask[]>;
@@ -44,6 +45,7 @@ export interface DownloadRuntimeOptions {
   networkSettings: NetworkSettings;
   concurrency: number;
   transport?: Transport;
+  mediaSourceProvider?: MediaSourceProvider;
   executors?: readonly ProtocolTaskExecutor[];
   /** Host setup, e.g. extension session header rules. Runs after acquiring ownership. */
   prepare?(tasks: readonly DownloadTask[]): Promise<void>;
@@ -219,6 +221,8 @@ export class DownloadRuntime {
       format: commit.validationOptions.format,
       ...(commit.validationOptions.expectedBytes === undefined ? {} : { expectedBytes: commit.validationOptions.expectedBytes }),
       ...(commit.validationOptions.requireVideo === undefined ? {} : { requireVideo: commit.validationOptions.requireVideo }),
+      ...(commit.validationOptions.expectedDurationSeconds === undefined ? {} : { expectedDurationSeconds: commit.validationOptions.expectedDurationSeconds }),
+      ...(commit.validationOptions.durationToleranceSeconds === undefined ? {} : { durationToleranceSeconds: commit.validationOptions.durationToleranceSeconds }),
     });
     await this.#event(task.id, 'output-validated', 'info', { filename: commit.finalFilename, bytesWritten: validation.size });
     const completed = resetTaskState(task, 'completed');
@@ -267,11 +271,12 @@ export class DownloadRuntime {
       }
       await this.#event(task.id, 'source-resolved', 'info', { ...diagnosticResource(media.url),
         ...(media.kind === 'hls' || media.kind === 'dash' || media.kind === 'progressive' ? { protocol: media.kind } : {}) });
-      const executor = findTaskExecutor(media.kind, this.#options.executors);
+      const executor = findTaskExecutor(media.kind, this.#options.executors, media.browserSource ? 'browser-session' : 'http');
       if (!executor) throw new RuntimeError('batchProtocolUnsupported');
       const execution: TaskExecutorResult = await executor.execute({ task, media, signal, networkPolicy,
         networkSettings: settings, artifacts: this.#taskArtifacts(task.id), transforms: this.#options.transforms,
         ...(this.#options.transport ? { transport: this.#options.transport } : {}), loadText,
+        ...(this.#options.mediaSourceProvider ? { mediaSourceProvider: this.#options.mediaSourceProvider } : {}),
         refreshMedia: () => this.#options.resolve(task.source, { fetchText: loadText, signal }),
         persistTask: async (next) => {
           this.#assertOutput(next); this.#claimTaskOutput(next);
@@ -305,8 +310,19 @@ export class DownloadRuntime {
       const cancelled = signal.aborted || (cause instanceof Error && cause.name === 'AbortError');
       const failure = classifyTaskError(cancelled ? new DOMException('Task cancelled.', 'AbortError') : cause);
       if (cause instanceof RuntimeError) { failure.code = cause.code; failure.params = cause.params; }
+      if (cause instanceof RuntimeError && cause.code.startsWith('browserSource')) failure.category = cause.code === 'browserSourceIncomplete' ? 'output' : 'source';
+      const needsSource = cause instanceof RuntimeError && ['browserSourceUnavailable', 'browserSourceBusy', 'browserSourceExpired', 'browserSourceChanged'].includes(cause.code);
+      const sourceNetwork = cause instanceof RuntimeError && cause.code === 'browserSourceNetwork';
+      if (needsSource) { failure.category = 'source'; failure.recoverable = false; }
+      if (sourceNetwork) { failure.category = 'network'; failure.recoverable = true; }
       const attempts = task.recoveryAttempt ?? 0;
-      if (!cancelled && isRecoverableNetworkError(cause) && attempts < settings.taskRecoveryAttempts) {
+      if (!cancelled && needsSource) {
+        const waiting = resetTaskState(task, 'waiting-source', failure.message);
+        waiting.failure = failure;
+        if (latestProgress) waiting.progress = latestProgress;
+        await this.#save(waiting);
+        await this.#event(task.id, 'source-waiting', 'warning', { message: failure.message, failure });
+      } else if (!cancelled && (sourceNetwork || isRecoverableNetworkError(cause)) && attempts < settings.taskRecoveryAttempts) {
         const recoveryAttempt = attempts + 1;
         const nextRetryAt = Date.now() + Math.min(settings.taskRetryMaxDelaySeconds,
           settings.taskRetryBaseDelaySeconds * 2 ** attempts) * 1000;
@@ -318,7 +334,7 @@ export class DownloadRuntime {
         stopped.failure = failure;
         if (latestProgress) stopped.progress = latestProgress;
         await this.#save(stopped);
-        await this.#event(task.id, cancelled ? 'task-cancelled' : 'task-failed', cancelled ? 'warning' : 'error', { message: failure.message });
+        await this.#event(task.id, cancelled ? 'task-cancelled' : 'task-failed', cancelled ? 'warning' : 'error', { message: failure.message, failure });
       }
     }
   }
@@ -359,7 +375,7 @@ export class DownloadRuntime {
         existing.add(item.id); return true;
       });
       for (const format of ['mp4', 'original'] as const) {
-        const group = fresh.filter((item) => (item.mediaKind === 'dash' || item.mediaKind === 'progressive' ? 'mp4' : outputFormat) === format);
+        const group = fresh.filter((item) => (item.executionMode === 'browser-session' || item.mediaKind === 'dash' || item.mediaKind === 'progressive' ? 'mp4' : outputFormat) === format);
         if (!group.length) continue;
         if (this.#options.store.add) await this.#options.store.add(group, format);
         else for (const source of group) {

@@ -46,7 +46,8 @@ export function upsertCandidate(
   if (!shouldIncludeMediaCandidate(observation)) return Promise.resolve();
 
   return enqueue(tabId, async () => {
-    const candidates = await read(tabId);
+    const candidates = (await read(tabId)).filter(candidate => !observation.browserSource ||
+      !candidate.browserSource || candidate.frameId !== frameId || candidate.browserSource.mediaId === observation.browserSource.mediaId);
     const identity = candidateIdentity(observation);
     const existingIndex = candidates.findIndex(
       (candidate) => candidateIdentity(candidate) === identity,
@@ -57,7 +58,7 @@ export function upsertCandidate(
       if (!existing) return;
       candidates[existingIndex] = {
         // A new Bilibili playback state replaces preview/DRM/track fields as a unit.
-        ...(observation.siteAdapterId === 'bilibili' ? {} : existing),
+        ...(observation.siteAdapterId === 'bilibili' || observation.browserSource ? {} : existing),
         ...observation,
         id: existing.id,
         tabId,

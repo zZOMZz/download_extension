@@ -4,6 +4,8 @@ export type { DownloadRuntimeOptions, TaskStore, ExecutionLocks, RuntimeSnapshot
 export type { ArtifactStore } from './artifact-store';
 export { readMediaArtifact } from './artifact-store';
 export type { TransformBackend } from './transform-backend';
+export type { MediaSourceProvider, MediaSourceSession } from './media-source';
+export type { BrowserSourceTarget, BrowserSourcePlan, ProcessedSegment } from '../shared/browser-source';
 export { RuntimeError } from './errors';
 export type { RuntimeErrorCode } from './errors';
 export { PROTOCOL_TASK_EXECUTORS, findTaskExecutor } from './task-executors/registry';

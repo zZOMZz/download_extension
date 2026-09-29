@@ -37,6 +37,8 @@ export interface OutputValidationOptions {
   format: MediaOutputFormat;
   expectedBytes?: number;
   requireVideo?: boolean;
+  expectedDurationSeconds?: number;
+  durationToleranceSeconds?: number;
 }
 
 export interface OutputValidationResult {
@@ -237,7 +239,12 @@ export async function validateMediaOutput(
       `The final output size does not match the completed download (${blob.size} != ${options.expectedBytes}).`,
     );
   }
-  return options.format === 'mp4'
-    ? validateMp4(blob, options.requireVideo ?? true)
-    : validateTransportStream(blob);
+  const result = options.format === 'mp4'
+    ? await validateMp4(blob, options.requireVideo ?? true)
+    : await validateTransportStream(blob);
+  if (options.expectedDurationSeconds !== undefined &&
+      (result.durationSeconds === undefined || Math.abs(result.durationSeconds - options.expectedDurationSeconds) > (options.durationToleranceSeconds ?? 1))) {
+    fail('invalid-mp4', 'The output duration does not match the complete media plan.');
+  }
+  return result;
 }

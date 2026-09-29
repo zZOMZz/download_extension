@@ -1,4 +1,12 @@
 export type RuntimeErrorCode =
+  | 'browserSourceUnavailable'
+  | 'browserSourceBusy'
+  | 'browserSourceUnsupported'
+  | 'browserSourceExpired'
+  | 'browserSourceNetwork'
+  | 'browserSourceIncomplete'
+  | 'browserSourceChanged'
+  | 'browserSourcePlanChanged'
   | 'chooseDirectoryBeforeQueue'
   | 'outputConflict'
   | 'runtimeBusy'

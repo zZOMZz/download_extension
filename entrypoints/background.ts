@@ -1,7 +1,8 @@
 import { browser } from 'wxt/browser';
 import { isManagerRuntimeSender } from '~/src/background/runtime-access';
+import { koalaVideoId } from '~/src/core/site-adapters/koala/identity';
 import { classifyMediaResource, isHttpUrl } from '~/src/core/detection/classify-media';
-import { detectionAdapterClaimsResource } from '~/src/core/detection/adapters/registry';
+import { detectionAdapterClaimsResource, suppressesGenericMedia } from '~/src/core/detection/adapters/registry';
 import {
   clearCandidates,
   findCandidate,
@@ -66,6 +67,7 @@ export default defineBackground(() => {
   browser.webRequest.onHeadersReceived.addListener(
     (details) => {
       if (details.tabId < 0) return;
+      if (details.initiator && suppressesGenericMedia(details.initiator)) return;
 
       try {
         if (detectionAdapterClaimsResource(new URL(details.url))) {
@@ -115,6 +117,16 @@ export default defineBackground(() => {
       sender, browser.runtime.id, browser.runtime.getURL('/manager.html'),
     )) return { ok: false, error: 'Task storage is only available to the trusted manager runtime.' };
     switch (request.type) {
+      case 'browser-source:relay': {
+        if (!isManagerRuntimeSender(sender, browser.runtime.id, browser.runtime.getURL('/manager.html'))) return { ok: false, error: 'browserSourceUnavailable' };
+        try {
+          const tab = await browser.tabs.get(request.sourceTabId);
+          if (!tab.url || !koalaVideoId(tab.url)) return { ok: false, error: 'browserSourceUnavailable' };
+          return await browser.tabs.sendMessage(request.sourceTabId, {
+            type: 'browser-source:rpc', owner: sender.tab!.id!, command: request.command,
+          }, { frameId: 0 });
+        } catch { return { ok: false, error: 'browserSourceUnavailable' }; }
+      }
       case 'youtube-sabr:observe':
         return { ok: await acceptYoutubeSabrBridgeRequest(request, sender, browser.runtime.id) };
       case 'candidate:observe': {
@@ -140,6 +152,14 @@ export default defineBackground(() => {
         return { ok: true, downloadId };
       }
       case 'downloader:open': {
+        const candidate = await findCandidate(request.tabId, request.candidateId);
+        if (candidate?.browserSource) {
+          const pageUrl = new URL(browser.runtime.getURL('/manager.html'));
+          pageUrl.searchParams.set('tabId', String(request.tabId));
+          pageUrl.searchParams.set('itemId', `koala:${candidate.browserSource.mediaId}`);
+          await browser.tabs.create({ url: pageUrl.href });
+          return { ok: true };
+        }
         const pageUrl = new URL(browser.runtime.getURL('/downloader.html'));
         pageUrl.searchParams.set('tabId', String(request.tabId));
         pageUrl.searchParams.set('candidateId', request.candidateId);

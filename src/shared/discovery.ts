@@ -6,6 +6,7 @@ export const discoveredMediaItemSchema = z.object({
   pageUrl: z.string().url(),
   title: z.string().min(1),
   mediaKind: z.enum(['hls', 'dash', 'progressive']).optional(),
+  executionMode: z.literal('browser-session').optional(),
   seriesTitle: z.string().min(1).optional(),
   sequence: z.number().int().nonnegative().optional(),
 });

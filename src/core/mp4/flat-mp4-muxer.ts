@@ -507,7 +507,7 @@ export class FlatMp4Muxer {
     const movie = requiredBox(topLevel, 'moov');
     const movieChildren = childBoxes(initializationSegment, movie);
     const movieHeader = requiredBox(movieChildren, 'mvhd');
-    this.#movieTimescale = movieTimescale(initializationSegment, movieHeader);
+    const sourceMovieTimescale = movieTimescale(initializationSegment, movieHeader);
     for (const trackBox of movieChildren.filter(({ type }) => type === 'trak')) {
       const trackChildren = childBoxes(initializationSegment, trackBox);
       const trackHeader = requiredBox(trackChildren, 'tkhd');
@@ -538,6 +538,9 @@ export class FlatMp4Muxer {
     if (!this.#initialized) {
       this.#sourceInitialization = initializationSegment.slice();
       this.#sourceMovie = movie;
+      // The output retains this source's mvhd. Later sources may use a different
+      // movie clock; durations and edit lists must stay in the retained clock.
+      this.#movieTimescale = sourceMovieTimescale;
       const fileTypeBytes = sliceBox(initializationSegment, fileType);
       await this.#destination.write(fileTypeBytes);
       this.#writePosition = fileTypeBytes.byteLength;

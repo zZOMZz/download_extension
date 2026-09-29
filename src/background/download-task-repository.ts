@@ -45,7 +45,7 @@ export function addDownloadTasks(
       tasks.push({
         id: crypto.randomUUID(),
         source: item,
-        outputFormat,
+        outputFormat: item.executionMode === 'browser-session' ? 'mp4' : outputFormat,
         status: 'queued',
         createdAt: now,
         updatedAt: now,

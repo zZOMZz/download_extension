@@ -10,6 +10,7 @@ export const downloadTaskStatusSchema = z.enum([
   'resolving',
   'downloading',
   'waiting',
+  'waiting-source',
   'completed',
   'failed',
   'cancelled',
@@ -76,9 +77,23 @@ export const dashDownloadCheckpointSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
 });
 
+export const browserSourceTrackCheckpointSchema = dashTrackCheckpointSchema.extend({
+  firstStartDTS: z.number().optional(), lastEndDTS: z.number().optional(),
+});
+export const browserSourceCheckpointSchema = z.object({
+  version: z.literal(3), protocol: z.literal('browser-source'),
+  providerId: z.string().min(1), mediaId: z.string().min(1), planFingerprint: z.string().min(1),
+  durationSeconds: z.number().positive(),
+  directoryName: z.string().min(1), directoryHandleId: z.string().min(1).optional(),
+  finalFilename: z.string().min(1), completedSegments: z.number().int().nonnegative(),
+  totalSegments: z.number().int().positive(), bytesWritten: z.number().int().nonnegative(),
+  tracks: z.object({ video: browserSourceTrackCheckpointSchema, audio: browserSourceTrackCheckpointSchema }),
+  updatedAt: z.number().int().nonnegative(),
+});
 export const downloadCheckpointSchema = z.discriminatedUnion('version', [
   hlsDownloadCheckpointSchema,
   dashDownloadCheckpointSchema,
+  browserSourceCheckpointSchema,
 ]);
 
 export const downloadTaskSchema = z.object({
@@ -98,6 +113,8 @@ export const downloadTaskSchema = z.object({
       format: z.enum(['mp4', 'ts']),
       expectedBytes: z.number().nonnegative().optional(),
       requireVideo: z.boolean().optional(),
+      expectedDurationSeconds: z.number().positive().optional(),
+      durationToleranceSeconds: z.number().nonnegative().optional(),
     }),
     partialFilenames: z.array(z.string().min(1)),
   }).optional(),
@@ -113,4 +130,5 @@ export type DownloadTaskProgress = z.infer<typeof downloadTaskProgressSchema>;
 export type HlsDownloadCheckpoint = z.infer<typeof hlsDownloadCheckpointSchema>;
 export type DashTrackCheckpoint = z.infer<typeof dashTrackCheckpointSchema>;
 export type DashDownloadCheckpoint = z.infer<typeof dashDownloadCheckpointSchema>;
+export type BrowserSourceCheckpoint = z.infer<typeof browserSourceCheckpointSchema>;
 export type DownloadCheckpoint = z.infer<typeof downloadCheckpointSchema>;

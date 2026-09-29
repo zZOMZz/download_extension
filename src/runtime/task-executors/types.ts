@@ -1,5 +1,6 @@
 import type { ArtifactStore } from '../artifact-store';
 import type { TransformBackend } from '../transform-backend';
+import type { MediaSourceProvider } from '../media-source';
 import type { Transport } from '../../core/network/transport';
 import type { HlsNetworkPolicy, NetworkRetryEvent } from '../../core/hls/download-hls';
 import type { OutputValidationOptions } from '../../core/media/output-validator';
@@ -23,6 +24,7 @@ export interface TaskExecutorContext {
   artifacts: ArtifactStore;
   transforms: TransformBackend;
   transport?: Transport;
+  mediaSourceProvider?: MediaSourceProvider;
   signal: AbortSignal;
   networkPolicy: HlsNetworkPolicy;
   networkSettings: NetworkSettings;
@@ -47,5 +49,6 @@ export interface TaskExecutorResult {
 
 export interface ProtocolTaskExecutor {
   readonly kind: ResolvedDiscoveredMedia['kind'];
+  readonly mode?: 'browser-session';
   execute(context: TaskExecutorContext): Promise<TaskExecutorResult>;
 }

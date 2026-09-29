@@ -1,6 +1,20 @@
 import type { AppLanguage } from './settings';
 
 const EN_MESSAGES = {
+  statusWaitingSource: 'Waiting for source page',
+  waitingSourceSuffix: ', {count} waiting for a source page',
+  eventSourceWaiting: 'Waiting for an available source page',
+  browserSourceLabel: 'Page-assisted download',
+  browserSourceHint: 'Uses the source page’s current playback quality and session.',
+  openSourcePage: 'Open source page',
+  browserSourceUnavailable: 'The source page is unavailable. Open the video, let the player load, then resume.',
+  browserSourceBusy: 'This source page is already serving a download. Resume after that task finishes.',
+  browserSourceUnsupported: 'This player or media layout is not supported by the page-assisted downloader.',
+  browserSourceExpired: 'Playback authorization expired. Refresh the source video, then resume.',
+  browserSourceNetwork: 'A media request failed in the source page.',
+  browserSourceIncomplete: 'The player did not produce a complete, continuous audio/video segment.',
+  browserSourceChanged: 'The source session changed. Reopen the correct video and resume.',
+  browserSourcePlanChanged: 'The video, quality, or media timeline changed. Keep the partial files and choose Restart to begin a new download.',
   outputConflict: 'Another task owns the output file {filename}. Use distinct task titles or resolve the saved partials first.',
   runtimeBusy: 'Another window is executing or changing this queue. Stop it there before taking over.',
   runtimeLockUnavailable: 'This browser does not support safe task ownership.',
@@ -261,6 +275,20 @@ export type TranslationValues = Record<string, string | number>;
 export type Translator = (key: MessageKey, values?: TranslationValues) => string;
 
 const ZH_CN_MESSAGES: Record<MessageKey, string> = {
+  statusWaitingSource: '等待来源页面',
+  waitingSourceSuffix: '，{count} 个等待来源页面',
+  eventSourceWaiting: '等待可用的来源页面',
+  browserSourceLabel: '页面辅助下载',
+  browserSourceHint: '使用来源页面当前的播放清晰度和会话。',
+  openSourcePage: '打开来源页',
+  browserSourceUnavailable: '来源页面不可用。请打开视频，等待播放器加载后继续。',
+  browserSourceBusy: '此来源页面正在处理另一个下载，请在该任务结束后继续。',
+  browserSourceUnsupported: '当前播放器或媒体结构暂不支持页面辅助下载。',
+  browserSourceExpired: '播放授权已过期，请刷新来源视频后继续。',
+  browserSourceNetwork: '来源页面的媒体请求失败。',
+  browserSourceIncomplete: '播放器没有生成完整、连续的音视频分片。',
+  browserSourceChanged: '来源会话已变化，请重新打开正确的视频后继续。',
+  browserSourcePlanChanged: '视频、清晰度或媒体时间线已变化。已保留部分文件，请选择“重新开始”以建立新下载。',
   outputConflict: '另一个任务正在使用输出文件 {filename}。请使用不同标题，或先处理已有断点文件。',
   runtimeBusy: '另一个窗口正在执行或修改队列。请先在那里停止，再接管任务。',
   runtimeLockUnavailable: '当前浏览器不支持安全的任务执行锁。',

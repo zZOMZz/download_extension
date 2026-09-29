@@ -1,6 +1,7 @@
 import type { DiscoveredMediaItem } from '../../shared/discovery';
 import { bilibiliDiscoveryAdapter } from './adapters/bilibili';
 import { twoRkDiscoveryAdapter } from './adapters/two-rk';
+import { koalaDiscoveryAdapter } from './adapters/koala';
 import type {
   DiscoveryResolveContext,
   DiscoveryScanContext,
@@ -11,6 +12,7 @@ import type {
 export const SITE_DISCOVERY_ADAPTERS: readonly SiteDiscoveryAdapter[] = Object.freeze([
   twoRkDiscoveryAdapter,
   bilibiliDiscoveryAdapter,
+  koalaDiscoveryAdapter,
 ]);
 
 function uniqueMatch(

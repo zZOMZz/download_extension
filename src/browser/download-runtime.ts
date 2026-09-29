@@ -6,6 +6,7 @@ import type { NetworkSettings } from '../shared/settings';
 import type { TaskDiagnosticEvent } from '../shared/task-diagnostics';
 import type { WritableDirectoryHandle } from './directory-output-writer';
 import { createBrowserArtifactStore, browserTransformBackend } from './runtime-adapters';
+import { createBrowserMediaSourceProvider } from './media-source-provider';
 import { addPersistentDownloadTasks, appendPersistentTaskDiagnosticEvent, configureManagerRequestAdapters, listPersistentDownloadTasks,
   replacePersistentDownloadTask, removePersistentDownloadTask } from './runtime-client';
 
@@ -36,6 +37,7 @@ export function createBrowserDownloadRuntime(options: {
     store: { add: addPersistentDownloadTasks, list: listPersistentDownloadTasks, save: replacePersistentDownloadTask, remove: removePersistentDownloadTask },
     artifacts: options.directory ? createBrowserArtifactStore(options.directory, options.directoryHandleId) : unavailableArtifacts,
     transforms: browserTransformBackend,
+    mediaSourceProvider: createBrowserMediaSourceProvider(),
     locks: browserExecutionLocks,
     resolve: resolveDiscoveredMedia,
     networkSettings: options.networkSettings,

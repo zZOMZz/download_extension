@@ -29,7 +29,7 @@ function taskMediaKind(task: DownloadTask): 'hls' | 'dash' | 'progressive' | und
 function checkpointReport(checkpoint: DownloadCheckpoint) {
   const common = {
     version: checkpoint.version,
-    protocol: checkpoint.version === 1 ? 'hls' : 'dash',
+    protocol: checkpoint.version === 1 ? 'hls' : checkpoint.version === 2 ? 'dash' : 'browser-source',
     directoryName: checkpoint.directoryName,
     directoryHandleId: checkpoint.directoryHandleId,
     finalFilename: checkpoint.finalFilename,

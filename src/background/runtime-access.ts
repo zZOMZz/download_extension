@@ -1,4 +1,8 @@
 /** Task storage is internal to the trusted manager host, never a content-script API. */
+export function isBackgroundRuntimeSender(sender: { id?: string | undefined; url?: string | undefined; tab?: unknown }, runtimeId: string, workerUrl: string): boolean {
+  return sender.id === runtimeId && sender.tab === undefined && (sender.url === undefined || sender.url === workerUrl);
+}
+
 export function isManagerRuntimeSender(sender: {
   id?: string | undefined;
   url?: string | undefined;

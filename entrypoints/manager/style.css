@@ -161,7 +161,7 @@ select { min-width: 190px; border: 1px solid var(--line); border-radius: 8px; pa
 .protocol-hls { color: #9bd6ff; background: rgb(62 145 203 / 16%); }
 .output-badge, .status { color: #c0c2ca; background: rgb(255 255 255 / 6%); }
 .status-downloading, .status-resolving { color: #ff9aa2; background: rgb(255 53 69 / 16%); }
-.status-waiting { color: #f3d39a; background: rgb(218 151 34 / 15%); }
+.status-waiting, .status-waiting-source { color: #f3d39a; background: rgb(218 151 34 / 15%); }
 .status-completed { color: #9de0ba; background: rgb(47 169 99 / 15%); }
 .status-failed, .status-cancelled { color: #ff9aa2; background: rgb(216 34 59 / 16%); }
 .task-error { margin: 8px 0 0; color: #ff9ca5; font-size: 11px; line-height: 1.4; }

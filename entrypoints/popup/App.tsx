@@ -172,6 +172,7 @@ export function App() {
                 {formatBytes(candidate.contentLength) && <span>{formatBytes(candidate.contentLength)}</span>}
               </div>
               <h2 className="candidate-title">{candidate.title || (candidate.kind === 'blob' ? t('pageGeneratedBlob') : displayUrl(candidate.sourcePageUrl ?? candidate.url))}</h2>
+              {candidate.browserSource && <p className="notice info">{t('browserSourceHint')}</p>}
               {candidate.isPreview && <p className="notice info">{t('previewOnly')}</p>}
               {protectedMedia && <p className="notice error">{t('protectedMediaUnsupported')}</p>}
               {qualities.length > 0 && <label className="quality-picker">

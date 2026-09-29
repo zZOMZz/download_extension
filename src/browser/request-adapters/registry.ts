@@ -2,18 +2,39 @@ import { browser } from 'wxt/browser';
 import type { MediaCandidate } from '../../shared/media';
 import { bilibiliRequestAdapter } from './bilibili';
 import { youtubeRequestAdapter } from './youtube';
-import type { SiteRequestAdapter } from './types';
+import type { SiteRequestAdapter, SiteRequestRule } from './types';
 
 const RULE_ID_OFFSET = 10_000_000;
+const MAX_RULE_ID = 0x7fffffff;
+let pending = Promise.resolve();
 
 export const SITE_REQUEST_ADAPTERS: readonly SiteRequestAdapter[] = Object.freeze([
   bilibiliRequestAdapter,
   youtubeRequestAdapter,
 ]);
 
-function ruleIdForTab(tabId: number, adapterIndex = 0): number {
-  if (!Number.isInteger(tabId) || tabId < 0) throw new Error('Invalid downloader tab id.');
-  return RULE_ID_OFFSET + tabId + adapterIndex * 100_000_000;
+function replaceTabRules(tabId: number, create: (allocate: () => number) => SiteRequestRule[]): Promise<void> {
+  if (!Number.isInteger(tabId) || tabId < 0 || tabId > MAX_RULE_ID) return Promise.reject(new Error('Invalid downloader tab id.'));
+  // These entry points run in the background worker. Serialize the read/allocate/write
+  // sequence and read Chrome's rules each time so worker restarts do not lose ownership.
+  const operation = pending.then(async () => {
+    const existing = await browser.declarativeNetRequest.getSessionRules();
+    const removeRuleIds = existing.filter(rule => rule.id >= RULE_ID_OFFSET && rule.action.type === 'modifyHeaders' &&
+      rule.condition.tabIds?.length === 1 && rule.condition.tabIds[0] === tabId &&
+      rule.condition.initiatorDomains?.length === 1 && rule.condition.initiatorDomains[0] === browser.runtime.id)
+      .map(rule => rule.id);
+    const removed = new Set(removeRuleIds);
+    const occupied = new Set(existing.filter(rule => !removed.has(rule.id)).map(rule => rule.id));
+    let next = RULE_ID_OFFSET;
+    const rules = create(() => {
+      while (occupied.has(next) && next <= MAX_RULE_ID) next++;
+      if (next > MAX_RULE_ID) throw new Error('No available request rule id.');
+      occupied.add(next); return next++;
+    });
+    if (removeRuleIds.length || rules.length) await browser.declarativeNetRequest.updateSessionRules({ removeRuleIds, addRules: rules });
+  });
+  pending = operation.catch(() => {});
+  return operation;
 }
 
 function findAdapter(id: string): SiteRequestAdapter {
@@ -27,17 +48,8 @@ export async function configureSiteRequestAdapterForTab(
   downloaderTabId: number,
 ): Promise<void> {
   if (!candidate.siteAdapterId) return;
-  const ruleId = ruleIdForTab(downloaderTabId);
-  const rules = findAdapter(candidate.siteAdapterId).createSessionRules(
-    candidate,
-    downloaderTabId,
-    browser.runtime.id,
-    ruleId,
-  );
-  await browser.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [ruleId],
-    addRules: rules,
-  });
+  const adapter = findAdapter(candidate.siteAdapterId);
+  await replaceTabRules(downloaderTabId, allocate => adapter.createSessionRules(candidate, downloaderTabId, browser.runtime.id, allocate()));
 }
 
 export async function configureSiteRequestAdaptersForManager(
@@ -45,22 +57,11 @@ export async function configureSiteRequestAdaptersForManager(
   managerTabId: number,
 ): Promise<void> {
   const requested = new Set(adapterIds);
-  const rules = SITE_REQUEST_ADAPTERS.flatMap((adapter, index) =>
-    requested.has(adapter.id)
-      ? adapter.createManagerSessionRules?.(
-          managerTabId,
-          browser.runtime.id,
-          ruleIdForTab(managerTabId, index),
-        ) ?? []
-      : []);
-  await browser.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: SITE_REQUEST_ADAPTERS.map((_, index) => ruleIdForTab(managerTabId, index)),
-    addRules: rules,
-  });
+  await replaceTabRules(managerTabId, allocate => SITE_REQUEST_ADAPTERS.flatMap(adapter =>
+    requested.has(adapter.id) && adapter.createManagerSessionRules
+      ? adapter.createManagerSessionRules(managerTabId, browser.runtime.id, allocate()) : []));
 }
 
 export async function removeSiteRequestAdapterForTab(tabId: number): Promise<void> {
-  await browser.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: SITE_REQUEST_ADAPTERS.map((_, index) => ruleIdForTab(tabId, index)),
-  });
+  await replaceTabRules(tabId, () => []);
 }

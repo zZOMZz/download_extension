@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import muxjs from 'mux.js';
 import { SeparateTrackFmp4Writer } from '../src/browser/separate-track-fmp4-writer';
 import { FlatMp4Muxer } from '../src/core/mp4/flat-mp4-muxer';
+import { validateMediaOutput } from '../src/core/media/output-validator';
 import type { RandomAccessBinaryWriter } from '../src/core/hls/download-hls';
 
 class MemoryDestination implements RandomAccessBinaryWriter {
@@ -139,6 +140,59 @@ describe('flat MP4 muxer', () => {
     });
     expect(new Set(trackIds).size).toBe(2);
   });
+
+  it.each([['audio', 'video'], ['video', 'audio']] as const)(
+    'preserves movie duration when %s and %s sources have different movie timescales',
+    async (firstType, secondType) => {
+      const transmuxer = new muxjs.mp4.Transmuxer({ remux: false, keepOriginalTimestamps: true });
+      const segments: Array<{ type: 'audio' | 'video'; init: Uint8Array; data: Uint8Array }> = [];
+      transmuxer.on('data', (segment) => {
+        if (segment.type === 'audio' || segment.type === 'video') {
+          segments.push({ type: segment.type, init: segment.initSegment, data: segment.data });
+        }
+      });
+      const done = new Promise<void>((resolve) => transmuxer.on('done', resolve));
+      transmuxer.push(new Uint8Array(readFileSync('node_modules/mux.js/test/segments/test-segment.ts')));
+      transmuxer.flush();
+      await done;
+
+      const firstTimescale = firstType === 'audio' ? 44_100 : 90_000;
+      const combine = async (mixedTimescales: boolean) => {
+        const destination = new MemoryDestination();
+        const muxer = new FlatMp4Muxer(destination);
+        for (const type of [firstType, secondType]) {
+          const segment = segments.find((value) => value.type === type)!;
+          const init = segment.init.slice();
+          const movie = boxes(init).find(({ type }) => type === 'moov')!;
+          const header = boxes(init, movie.contentStart, movie.end).find(({ type }) => type === 'mvhd')!;
+          const timescaleOffset = header.contentStart + (init[header.contentStart] === 1 ? 20 : 12);
+          const timescale = mixedTimescales ? (type === 'audio' ? 44_100 : 90_000) : firstTimescale;
+          // Change the independent source's movie clock, retaining all encoded samples and track clocks.
+          new DataView(init.buffer).setUint32(timescaleOffset, timescale);
+          await muxer.addSource(type, init);
+          await muxer.appendFragment(segment.data, type);
+        }
+        await muxer.finalize();
+        const output = destination.result();
+        const validation = await validateMediaOutput(new Blob([output.slice().buffer as ArrayBuffer]), { format: 'mp4' });
+        const movie = boxes(output).find(({ type }) => type === 'moov')!;
+        const durations = boxes(output, movie.contentStart, movie.end)
+          .filter(({ type }) => type === 'trak').map((track) => {
+            const header = boxes(output, track.contentStart, track.end).find(({ type }) => type === 'tkhd')!;
+            const view = new DataView(output.buffer);
+            const duration = output[header.contentStart] === 1
+              ? Number(view.getBigUint64(header.contentStart + 28))
+              : view.getUint32(header.contentStart + 20);
+            return duration / firstTimescale;
+          });
+        return { validation, durations };
+      };
+      const reference = await combine(false);
+      const actual = await combine(true);
+      expect(actual.validation.durationSeconds).toBeCloseTo(reference.validation.durationSeconds!, 6);
+      expect(actual.durations).toEqual(reference.durations);
+    },
+  );
 
   it('streams separate fragmented-MP4 playlists through the shared track writer', async () => {
     const transmuxer = new muxjs.mp4.Transmuxer({ remux: false, keepOriginalTimestamps: true });

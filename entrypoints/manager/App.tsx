@@ -33,6 +33,7 @@ import { createTranslator, LANGUAGE_OPTIONS, type MessageKey, type Translator } 
 import {
   DOWNLOAD_TASKS_STORAGE_KEY,
   type DashDownloadCheckpoint,
+  type BrowserSourceCheckpoint,
   type DownloadTask,
   type DownloadTaskStatus,
 } from '~/src/shared/download-task';
@@ -63,6 +64,7 @@ const STATUS_LABEL_KEYS: Record<DownloadTaskStatus, MessageKey> = {
   resolving: 'statusResolving',
   downloading: 'statusDownloading',
   waiting: 'statusWaiting',
+  'waiting-source': 'statusWaitingSource',
   completed: 'statusCompleted',
   failed: 'statusFailed',
   cancelled: 'statusCancelled',
@@ -88,6 +90,7 @@ const DIAGNOSTIC_EVENT_LABEL_KEYS: Record<TaskDiagnosticEventCode, MessageKey> =
   'source-resolved': 'eventSourceResolved',
   'source-refresh-started': 'eventSourceRefreshStarted',
   'source-refreshed': 'eventSourceRefreshed',
+  'source-waiting': 'eventSourceWaiting',
   'manifest-loaded': 'eventManifestLoaded',
   'dash-tracks-selected': 'eventDashTracksSelected',
   'audio-rendition-loaded': 'eventAudioRenditionLoaded',
@@ -144,7 +147,7 @@ function formatBitRate(bitsPerSecond: number | undefined): string | undefined {
 }
 
 function DashCheckpointProgress({ checkpoint, t }: {
-  checkpoint: DashDownloadCheckpoint;
+  checkpoint: DashDownloadCheckpoint | BrowserSourceCheckpoint;
   t: Translator;
 }) {
   return (
@@ -334,8 +337,16 @@ export function App() {
 
         if (sourceTabId !== null && Number.isInteger(sourceTabId) && sourceTabId >= 0) {
           const items = await scanTabForMedia(sourceTabId);
-          setDiscovered(items);
-          setSelectedIds(new Set(items.map(({ id }) => id)));
+          const itemId = params.get('itemId');
+          if (itemId) {
+            const item = items.find(item => item.id === itemId);
+            if (!item || item.executionMode !== 'browser-session') throw new Error(t('browserSourceUnavailable'));
+            const runtime = createBrowserDownloadRuntime({ directory: null, networkSettings: settings.network, concurrency: settings.taskConcurrency });
+            setTasks((await runtime.enqueue([item], 'mp4')).tasks.slice());
+          } else {
+            setDiscovered(items);
+            setSelectedIds(new Set(items.map(({ id }) => id)));
+          }
         }
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : t('unableInitializeManager'));
@@ -431,9 +442,11 @@ export function App() {
       const failed = results.filter(({ status }) => status === 'failed').length;
       const cancelled = results.filter(({ status }) => status === 'cancelled').length;
       const queued = results.filter(({ status }) => status === 'queued' || status === 'waiting').length;
+      const waitingSource = results.filter(({ status }) => status === 'waiting-source').length;
       setSummary(t('queueFinished', { completed, failed,
         cancelled: cancelled ? t('cancelledSuffix', { count: cancelled }) : '',
-        queued: queued ? t('queuedSuffix', { count: queued }) : '' }));
+        queued: (queued ? t('queuedSuffix', { count: queued }) : '') +
+          (waitingSource ? t('waitingSourceSuffix', { count: waitingSource }) : '') }));
     } catch (cause) {
       setError(runtimeErrorMessage(cause, t));
     } finally {
@@ -797,6 +810,7 @@ export function App() {
                 <div className="task-title">
                   <strong>{task.source.title}</strong>
                   <div className="task-badges">
+                    {task.source.executionMode === 'browser-session' && <span className="output-badge">{t('browserSourceLabel')}</span>}
                     {mediaKind && (
                       <span className={`protocol protocol-${mediaKind}`}>
                         {mediaKind === 'progressive' ? 'MP4' : t(mediaKind === 'dash' ? 'protocolDash' : 'protocolHls')}
@@ -838,7 +852,7 @@ export function App() {
                     })}
                   </p>
                 )}
-                {task.checkpoint?.version === 2 && task.status !== 'completed' && (
+                {(task.checkpoint?.version === 2 || task.checkpoint?.version === 3) && task.status !== 'completed' && (
                   <DashCheckpointProgress checkpoint={task.checkpoint} t={t} />
                 )}
                 {task.progress && <TaskProgress progress={task.progress} t={t} />}
@@ -878,12 +892,13 @@ export function App() {
                 <button className="quiet" onClick={() => void toggleTaskDetails(task.id)}>
                   {expandedTaskId === task.id ? t('closeDetails') : t('details')}
                 </button>
-                {(task.status === 'failed' || task.status === 'cancelled' || task.status === 'waiting') && (
+                {task.status === 'waiting-source' && <a href={task.source.pageUrl} target="_blank" rel="noreferrer">{t('openSourcePage')}</a>}
+                {(task.status === 'failed' || task.status === 'cancelled' || task.status === 'waiting' || task.status === 'waiting-source') && (
                   <button className="secondary" disabled={running} onClick={() => void retryTask(task)}>
                     {task.checkpoint ? t('resume') : t('retry')}
                   </button>
                 )}
-                {task.checkpoint && (task.status === 'failed' || task.status === 'cancelled' || task.status === 'waiting') && (
+                {task.checkpoint && (task.status === 'failed' || task.status === 'cancelled' || task.status === 'waiting' || task.status === 'waiting-source') && (
                   <button className="quiet" disabled={running} onClick={() => void restartTask(task)}>{t('restart')}</button>
                 )}
                 {task.status !== 'downloading' && task.status !== 'resolving' && (

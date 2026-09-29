@@ -1,8 +1,14 @@
 import { bilibiliDetectionAdapter } from './bilibili';
 import { youtubeDetectionAdapter } from './youtube';
+import { koalaDetectionAdapter } from './koala';
 import type { MediaDetectionAdapter, MediaDetectionContext } from './types';
 
-const ADAPTERS: MediaDetectionAdapter[] = [bilibiliDetectionAdapter, youtubeDetectionAdapter];
+const ADAPTERS: MediaDetectionAdapter[] = [bilibiliDetectionAdapter, youtubeDetectionAdapter, koalaDetectionAdapter];
+
+export function suppressesGenericMedia(rawPageUrl: string): boolean {
+  try { const url = new URL(rawPageUrl); return ADAPTERS.some(adapter => adapter.suppressesGenericMedia?.(url)); }
+  catch { return false; }
+}
 
 export function detectAdapterMedia(
   document: Document,
